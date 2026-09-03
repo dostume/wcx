@@ -38,5 +38,3 @@ data class SKBuiltinBufferProto(
             SKBuiltinBufferProto(length = bytes.size, buf = bytes)
     }
 }
-
-typealias OpBufProto = SKBuiltinBufferProto

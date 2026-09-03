@@ -62,7 +62,6 @@ object ZygiskEntry {
                 check(nativeInitialize()) {
                     "failed to initialize ART hook runtime and trust ZygiskEntry loader"
                 }
-                NativeLoader.configureZygiskPayload(apkPath, dataDir)
                 val service = ZygiskLoaderService(
                     modulePath = apkPath,
                     versionName = BuildConfig.VERSION_NAME,
@@ -187,6 +186,7 @@ object ZygiskEntry {
                 modulePath = modulePath,
                 allowDynamicLoad = false,
             )
+            true
         } catch (t: Throwable) {
             WeLogger.e(TAG, "failed to start WeKit module", t)
             false

@@ -1,4 +1,6 @@
 <resources>
     <string name="app_name">WCX</string>
     <string name="app_description">微信，解锁超能力\n重构你的微信使用体验\nJohnny520@github</string>
+    <!-- 哨兵资源：用于检测模块 APK 资源是否已成功注入到宿主 Resources -->
+    <string name="res_inject_success">WCX 模块资源注入成功</string>
 </resources>

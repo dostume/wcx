@@ -25,7 +25,7 @@ object ResourcesInjector {
         resources ?: return
         if (hasModuleRes(resources)) return
 
-        val modulePath = StartupInfo.modulePath
+        val modulePath = StartupInfo.loaderService.mainModulePath
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             injectResGte30(resources, modulePath)
         } else {

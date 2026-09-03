@@ -65,7 +65,8 @@ class ArtHookBridge : IHookBridge {
 
     // ── IHookBridge metadata ──────────────────────────────────────────────────
 
-    override val hookBridgeName: String = "ART 钩子"
+    // Zygisk 模式下没有宿主的框架版本号，此处固定为 100，仅用于标识 bridge 能力等级
+    override val apiLevel: Int = 100
     override val frameworkName: String = "Zygisk"
     override val frameworkVersion: String = "v1"
     override val frameworkVersionCode: Long = 1
@@ -152,7 +153,7 @@ class ArtHookBridge : IHookBridge {
 
     // ── Deoptimize (unsupported) ──────────────────────────────────────────────
 
-    override fun deoptimize(executable: Executable): Boolean = false
+    override fun deoptimize(member: Member): Boolean = false
 
     /** Called after NativeLoader has loaded every module-provided native library. */
     internal fun hideLoadedModuleLibraries(): Boolean = nativeHideLoadedModuleLibraries()
