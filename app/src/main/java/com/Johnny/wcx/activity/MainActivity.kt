@@ -532,21 +532,38 @@ class MainActivity : ComponentActivity() {
                         confirmButton = {
                             Button(onClick = {
                                 showConfirmDeleteTinkerDialog = false
-                                if (!(Shell.isAppGrantedRoot() ?: false)) {
-                                    showNoRootDialog = true
-                                } else {
-                                    paths.forEach { path ->
-                                        ProcessBuilder(
-                                            "su", "-mm", "-c",
-                                            "if [ -d '$path' ]; then " +
-                                                    "find '$path' -mindepth 1 -exec rm -rf {} + ; " +
-                                                    "chmod -R 000 '$path' ; " +
-                                                    "fi"
-                                        )
-                                            .redirectErrorStream(true)
-                                            .start()
+                                // 不用 isAppGrantedRoot() 的过期缓存, 直接发起 su 实时判定
+                                thread {
+                                    val failed = paths.mapNotNull { path ->
+                                        runCatching {
+                                            val proc = ProcessBuilder(
+                                                "su", "-mm", "-c",
+                                                "if [ -d '$path' ]; then " +
+                                                        "find '$path' -mindepth 1 -exec rm -rf {} + ; " +
+                                                        "chmod -R 000 '$path' ; " +
+                                                        "fi"
+                                            )
+                                                .redirectErrorStream(true)
+                                                .start()
+                                            val output = proc.inputStream.bufferedReader().readText()
+                                            if (proc.waitFor() == 0) null else path to output.trim()
+                                        }.getOrElse { e -> path to (e.message ?: "执行失败") }
                                     }
-                                    showToast(this@MainActivity, "操作成功!")
+                                    runOnUiThread {
+                                        when {
+                                            failed.isEmpty() ->
+                                                showToast(this@MainActivity, "操作成功!")
+                                            failed.any { (_, output) ->
+                                                output.isEmpty() ||
+                                                        output.contains("denied", ignoreCase = true) ||
+                                                        output.contains("not found", ignoreCase = true)
+                                            } -> showNoRootDialog = true
+                                            else ->
+                                                shortcutError = failed.joinToString("\n") { (path, output) ->
+                                                    "$path: $output"
+                                                }
+                                        }
+                                    }
                                 }
                             }) { Text("确定") }
                         })
@@ -579,16 +596,33 @@ class MainActivity : ComponentActivity() {
                         confirmButton = {
                             Button(onClick = {
                                 showConfirmDeleteModuleDataDialog = false
-                                if (!(Shell.isAppGrantedRoot() ?: false)) {
-                                    showNoRootDialog = true
-                                } else {
-                                    // if using Shell.cmd or su -c without -mm, the view of /data/user/0 is restricted
-                                    paths.forEach { path ->
-                                        ProcessBuilder("su", "-mm", "-c", "rm -rf $path")
-                                            .redirectErrorStream(true)
-                                            .start()
+                                // 不用 isAppGrantedRoot() 的过期缓存, 直接发起 su 实时判定
+                                thread {
+                                    val failed = paths.mapNotNull { path ->
+                                        runCatching {
+                                            // if using Shell.cmd or su -c without -mm, the view of /data/user/0 is restricted
+                                            val proc = ProcessBuilder("su", "-mm", "-c", "rm -rf $path")
+                                                .redirectErrorStream(true)
+                                                .start()
+                                            val output = proc.inputStream.bufferedReader().readText()
+                                            if (proc.waitFor() == 0) null else path to output.trim()
+                                        }.getOrElse { e -> path to (e.message ?: "执行失败") }
                                     }
-                                    showToast(this@MainActivity, "删除成功!")
+                                    runOnUiThread {
+                                        when {
+                                            failed.isEmpty() ->
+                                                showToast(this@MainActivity, "删除成功!")
+                                            failed.any { (_, output) ->
+                                                output.isEmpty() ||
+                                                        output.contains("denied", ignoreCase = true) ||
+                                                        output.contains("not found", ignoreCase = true)
+                                            } -> showNoRootDialog = true
+                                            else ->
+                                                shortcutError = failed.joinToString("\n") { (path, output) ->
+                                                    "$path: $output"
+                                                }
+                                        }
+                                    }
                                 }
                             }) { Text("确定") }
                         })
