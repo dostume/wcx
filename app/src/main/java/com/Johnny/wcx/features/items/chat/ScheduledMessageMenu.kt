@@ -299,6 +299,8 @@ object ScheduledMessageMenu : SwitchFeature(),
                         hour = timePickerState.hour,
                         minute = timePickerState.minute,
                         repeatDaily = repeatDaily,
+                        // 关闭"每天重复"即为一次性任务：发送一次后自动停用，避免残留
+                        oneTimeOnly = !repeatDaily,
                         enabled = true,
                         segments = segments
                     )

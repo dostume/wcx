@@ -115,6 +115,9 @@ object DexCacheManager {
             WeLogger.d(TAG, "cache saved for: ${item.displayName}")
         } catch (e: Exception) {
             WeLogger.e(TAG, "failed to save cache for: ${item.displayName}", e)
+            // 必须向上抛出：吞掉异常会让适配界面显示"成功"但缓存实际未持久化，
+            // 下次启动重新检测 → 无限弹"需要更新 DEX 缓存"
+            throw e
         }
     }
 
@@ -170,8 +173,16 @@ object DexCacheManager {
     private fun calculateMethodHash(item: IResolveDex): String {
         val className = item.javaClass.name
         val hash = GeneratedMethodHashes.HASHES[className]
-        if (hash.isNullOrBlank())
-            error("failed to retrieve method hash for item $className; this shouldn't happen")
+        if (hash.isNullOrBlank()) {
+            // 哈希表缺项（如 R8 改名/类合并、或生成任务正则漏匹配）时退回固定哨兵而不是抛异常：
+            // 否则 isItemCacheValid 判定失败 + saveItemCache 写入失败，该功能每次启动都被
+            // 判为"需要更新"、适配显示成功却永远无法持久化，形成无限弹窗死循环。
+            // 退化为哨兵后仅损失该功能的变化检测能力，缓存读写功能不受影响。
+            WeLogger.w(TAG, "no baked method hash for $className, using fallback sentinel")
+            return HASH_FALLBACK
+        }
         return hash
     }
+
+    private const val HASH_FALLBACK = "no-baked-hash"
 }

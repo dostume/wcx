@@ -149,7 +149,8 @@ object ScheduledMessage : ClickableFeature() {
 
         runCatching {
             schedules.filter { it.enabled }.forEach { schedule ->
-                scheduleAlarm(schedule)
+                // 冷启动允许补发刚错过的任务（15 分钟宽限窗仅此一处使用）
+                scheduleAlarm(schedule, allowCatchUp = true)
             }
         }.onFailure {
             WeLogger.e(TAG, "failed to schedule alarms", it)
@@ -168,7 +169,7 @@ object ScheduledMessage : ClickableFeature() {
         }
     }
 
-    private fun scheduleAlarm(schedule: ScheduleConfig) {
+    private fun scheduleAlarm(schedule: ScheduleConfig, allowCatchUp: Boolean = false) {
         val context = HostInfo.application
         val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
         val intent = Intent(ALARM_ACTION).apply {
@@ -182,7 +183,7 @@ object ScheduledMessage : ClickableFeature() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        val triggerTime = calculateNextTriggerTime(schedule)
+        val triggerTime = calculateNextTriggerTime(schedule, allowCatchUp)
         if (triggerTime <= 0) return
         schedule.nextSendTime = triggerTime
         updateSchedule(schedule)
@@ -247,7 +248,7 @@ object ScheduledMessage : ClickableFeature() {
         timerJobs[schedule.id] = job
     }
 
-    private fun calculateNextTriggerTime(schedule: ScheduleConfig): Long {
+    private fun calculateNextTriggerTime(schedule: ScheduleConfig, allowCatchUp: Boolean): Long {
         val now = System.currentTimeMillis()
         val targetTime = LocalTime.of(schedule.hour, schedule.minute)
         val todayTarget = java.time.LocalDateTime.now().with(targetTime).atZone(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli()
@@ -255,8 +256,10 @@ object ScheduledMessage : ClickableFeature() {
         return if (todayTarget > now) {
             todayTarget
         } else if (schedule.repeatDaily) {
-            // Bug Fix: 如果今天的目标时间刚过不久（15分钟内），立即触发而不等到明天
-            if (now - todayTarget < 15 * 60 * 1000L) {
+            // 15 分钟补发宽限窗只允许冷启动（onEnable）场景使用：
+            // 若发送后重排也走这里，刚发完时 now - todayTarget 必然小于 15 分钟，
+            // 会得到 now + 2s 的下一次触发时间 → 每 2 秒重发一次的死循环。
+            if (allowCatchUp && now - todayTarget < 15 * 60 * 1000L) {
                 now + 2000L
             } else {
                 todayTarget + 24 * 60 * 60 * 1000L
@@ -727,6 +730,8 @@ object ScheduledMessage : ClickableFeature() {
                         hour = h,
                         minute = m,
                         repeatDaily = repeatDaily,
+                        // 关闭"每天重复"即为一次性任务：发送一次后自动停用
+                        oneTimeOnly = !repeatDaily,
                         enabled = enabled,
                         segments = segments
                     )

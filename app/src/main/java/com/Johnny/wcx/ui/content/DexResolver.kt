@@ -112,6 +112,19 @@ fun DexResolver(
             item.resolveAllDex(dexKit)
 
             DexCacheManager.saveItemCache(item)
+
+            // 保存后复检：若校验仍不通过（如部分委托未解析出任何结果），如实上报失败，
+            // 而不是显示"成功"后下次启动又弹"需要更新 DEX 缓存"的死循环
+            if (!DexCacheManager.isItemCacheValid(item)) {
+                val unresolvedKeys = item.dexDelegates
+                    .filter { it.getDescriptorString().isNullOrEmpty() }
+                    .joinToString(", ") { it.key }
+                throw IllegalStateException(
+                    if (unresolvedKeys.isEmpty()) "缓存写入后校验未通过"
+                    else "缓存写入后校验未通过，以下委托未解析出结果（当前微信版本可能缺少对应符号）: $unresolvedKeys"
+                )
+            }
+
             progressChannel.send(ScanProgress.Complete(displayName))
             ScanResult.Success(displayName)
         } catch (e: Exception) {

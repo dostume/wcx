@@ -41,7 +41,16 @@ interface IResolveDex {
         for (delegate in dexDelegates) {
             val value = cache[delegate.key] as? String
             if (!value.isNullOrEmpty()) {
-                delegate.loadDescriptor(value)
+                try {
+                    delegate.loadDescriptor(value)
+                } catch (e: Exception) {
+                    // 单个委托的描述符损坏只影响该委托本身；
+                    // 若让它抛到外层，缓存文件会被整体删除并重扫，形成死循环
+                    com.Johnny.wcx.utils.WeLogger.w(
+                        "IResolveDex", "failed to load descriptor for key ${delegate.key}: ${e.message}"
+                    )
+                    missingKeys += delegate.key
+                }
             } else {
                 missingKeys += delegate.key
             }
