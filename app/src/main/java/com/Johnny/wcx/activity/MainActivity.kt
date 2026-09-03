@@ -72,12 +72,14 @@ import com.Johnny.wcx.ui.utils.theme.darkScheme
 import com.Johnny.wcx.ui.utils.theme.lightScheme
 import com.Johnny.wcx.utils.android.androidUserId
 import com.Johnny.wcx.utils.android.getEnabled
+import com.Johnny.wcx.utils.android.runOnUiThread
 import com.Johnny.wcx.utils.android.setEnabled
 import com.Johnny.wcx.utils.android.showToast
 import com.Johnny.wcx.utils.formatEpoch
 import com.Johnny.wcx.utils.hook_status.HookStatus
 import com.Johnny.wcx.utils.openInSystem
 import com.Johnny.wcx.utils.registerBshSnapshotDecompileLaunchers
+import kotlin.concurrent.thread
 
 class MainActivity : ComponentActivity() {
 
@@ -343,22 +345,36 @@ class MainActivity : ComponentActivity() {
 
                 ElevatedCard(
                     onClick = {
-                        if (!(Shell.isAppGrantedRoot() ?: false)) {
-                            showNoRootDialog = true
-                        } else {
-                            val userId = androidUserId
-                            val hostPkg =
-                                prefs.getString("host_pkg_name", PackageNames.WECHAT)!!
-                            Shell.cmd(
-                                "am force-stop --user $userId $hostPkg",
-                                "am start --user $userId -n $hostPkg/${PackageNames.WECHAT}.ui.LauncherUI"
-                            ).submit { result ->
-                                if (result.isSuccess) {
-                                    finishAndRemoveTask()
-                                } else {
-                                    shortcutError = (result.out + result.err)
-                                        .joinToString("\n")
-                                        .ifBlank { "无法启动微信 (包名: $hostPkg)" }
+                        val userId = androidUserId
+                        val hostPkg =
+                            prefs.getString("host_pkg_name", PackageNames.WECHAT)!!
+                        // Shell.isAppGrantedRoot() 只反映进程首次建壳时的结果且会被缓存,
+                        // 用户事后在授权管理里补授 root 不会刷新, 会一直误报无 root。
+                        // 这里改为每次点击直接发起 su 请求, 由授权管理实时判定
+                        thread {
+                            val outcome = runCatching {
+                                val proc = ProcessBuilder(
+                                    "su", "-c",
+                                    "am force-stop --user $userId $hostPkg && " +
+                                            "am start --user $userId -n $hostPkg/${PackageNames.WECHAT}.ui.LauncherUI"
+                                ).redirectErrorStream(true).start()
+                                val output = proc.inputStream.bufferedReader().readText()
+                                proc.waitFor() to output.trim()
+                            }.getOrNull()
+
+                            runOnUiThread {
+                                when {
+                                    outcome == null ->
+                                        shortcutError = "无法执行 su, 请确认设备已 root"
+                                    outcome.first == 0 ->
+                                        finishAndRemoveTask()
+                                    outcome.second.isEmpty() ||
+                                            outcome.second.contains("denied", ignoreCase = true) ||
+                                            outcome.second.contains("not found", ignoreCase = true) ->
+                                        showNoRootDialog = true
+                                    else ->
+                                        shortcutError = outcome.second
+                                            .ifBlank { "无法启动微信 (包名: $hostPkg)" }
                                 }
                             }
                         }

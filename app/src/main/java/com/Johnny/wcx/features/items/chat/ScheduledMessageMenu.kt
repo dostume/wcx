@@ -132,9 +132,12 @@ object ScheduledMessageMenu : SwitchFeature(),
                 .getOrDefault(talker)
 
             // 媒体文件先落盘 moduleCache 再注册任务，防止原文件被微信清理
-            val segments = buildSegments(msgInfos) ?: return@launch
+            val (segments, skipped) = buildSegments(msgInfos) ?: return@launch
 
             withContext(Dispatchers.Main) {
+                if (skipped.isNotEmpty()) {
+                    showToast("已跳过无法处理的消息: ${skipped.joinToString("、")}")
+                }
                 showComposeDialog(view.context) {
                     ScheduleConfirmDialogContent(
                         talker = talker,
@@ -149,11 +152,15 @@ object ScheduledMessageMenu : SwitchFeature(),
 
     /**
      * 将选中的消息按顺序转换为 MessageSegment 列表（一条多段任务）。
-     * 任一消息媒体获取失败则返回 null（内部已 Toast 提示）。
+     * 单条消息转换失败时跳过并继续（记录进 skipped 列表），
+     * 只有全部失败才返回 null（内部已 Toast 提示）。
      */
     @Suppress("DEPRECATION")
-    private suspend fun buildSegments(msgInfos: List<MessageInfo>): List<MessageSegment>? {
+    private suspend fun buildSegments(
+        msgInfos: List<MessageInfo>
+    ): Pair<List<MessageSegment>, List<String>>? {
         val segments = mutableListOf<MessageSegment>()
+        val skipped = mutableListOf<String>()
 
         msgInfos.forEachIndexed { index, msgInfo ->
             val segment = runCatching { convertToSegment(msgInfo) }
@@ -163,13 +170,19 @@ object ScheduledMessageMenu : SwitchFeature(),
                 .getOrNull()
 
             if (segment == null) {
-                showToastSuspend("第${index + 1}条消息（${msgInfo.type?.displayName ?: "未知类型"}）无法创建定时任务")
-                return null
+                skipped += "第${index + 1}条(${msgInfo.type?.displayName ?: "未知类型"})"
+            } else {
+                segments += segment
             }
-            segments += segment
         }
 
-        return segments
+        if (segments.isEmpty()) {
+            val detail = if (skipped.size == 1) skipped.first() else "所选消息均"
+            showToastSuspend("${detail}无法创建定时任务, 请查看模块日志了解详情")
+            return null
+        }
+
+        return segments to skipped
     }
 
     @Suppress("DEPRECATION")
@@ -184,7 +197,14 @@ object ScheduledMessageMenu : SwitchFeature(),
                 content = msgInfo.quoteMsgActualContent ?: msgInfo.actualContent
             )
             MessageType.IMAGE -> {
-                val imagePath = WeMessageApi.downloadImage(msgInfo.serverId)
+                // 多选路径下的消息对象可能缺失 msgSvrId, 先按本地 msgId 回查数据库
+                val svrId = msgInfo.serverId.takeIf { it > 0 }
+                    ?: WeMessageApi.getMsgSvrIdByMsgId(msgInfo.id)
+                    ?: run {
+                        WeLogger.w(TAG, "image message has no resolvable msgSvrId (msgId=${msgInfo.id})")
+                        return null
+                    }
+                val imagePath = WeMessageApi.downloadImage(svrId)
                     ?: return null
                 val cached = copyMediaToCache(imagePath) ?: return null
                 MessageSegment(type = ScheduleMessageType.IMAGE, filePath = cached)
