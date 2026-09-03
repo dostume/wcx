@@ -162,7 +162,9 @@ object ScheduledMessageMenu : SwitchFeature(),
         val segments = mutableListOf<MessageSegment>()
         val skipped = mutableListOf<String>()
 
-        msgInfos.forEachIndexed { index, msgInfo ->
+        msgInfos.forEachIndexed { index, rawMsgInfo ->
+            // 多选路径的消息对象可能只填充了部分字段, 先用数据库权威数据补全
+            val msgInfo = normalizeMsgInfo(rawMsgInfo)
             val segment = runCatching { convertToSegment(msgInfo) }
                 .onFailure {
                     WeLogger.e(TAG, "failed to convert message #${index + 1} (type=${msgInfo.typeCode})", it)
@@ -185,6 +187,38 @@ object ScheduledMessageMenu : SwitchFeature(),
         return segments to skipped
     }
 
+    /**
+     * 多选路径传入的消息对象可能只填充了部分字段（缺 msgSvrId/msgId/imgPath 等）。
+     * 优先用本地 msgId 从 message 表重建权威完整对象；msgId 也缺失时按属性匹配兜底；
+     * 两者都失败则保留原对象，由 convertToSegment 内部继续兜底。
+     */
+    private fun normalizeMsgInfo(msgInfo: MessageInfo): MessageInfo {
+        return runCatching {
+            val instance = if (msgInfo.id > 0) {
+                WeMessageApi.getMsgInfoInstanceByMsgId(msgInfo.id)
+            } else {
+                WeMessageApi.findMsgIdByAttributes(
+                    talker = msgInfo.talker,
+                    createTime = msgInfo.createTime,
+                    typeCode = msgInfo.typeCode,
+                    isSend = msgInfo.isSend
+                )?.let { WeMessageApi.getMsgInfoInstanceByMsgId(it) }
+            }
+
+            if (instance != null) {
+                WeLogger.i(
+                    TAG,
+                    "msg info normalized from db (original id=${msgInfo.id}, svrId=${msgInfo.serverId})"
+                )
+                MessageInfo(instance)
+            } else {
+                msgInfo
+            }
+        }.onFailure {
+            WeLogger.e(TAG, "normalizeMsgInfo failed", it)
+        }.getOrDefault(msgInfo)
+    }
+
     @Suppress("DEPRECATION")
     private fun convertToSegment(msgInfo: MessageInfo): MessageSegment? {
         return when (msgInfo.type) {
@@ -197,16 +231,20 @@ object ScheduledMessageMenu : SwitchFeature(),
                 content = msgInfo.quoteMsgActualContent ?: msgInfo.actualContent
             )
             MessageType.IMAGE -> {
-                // 多选路径下的消息对象可能缺失 msgSvrId, 先按本地 msgId 回查数据库
+                // serverId 缺失时按本地 msgId 回查; CDN 下载失败再尝试已落地的 image2 大图
                 val svrId = msgInfo.serverId.takeIf { it > 0 }
                     ?: WeMessageApi.getMsgSvrIdByMsgId(msgInfo.id)
-                    ?: run {
-                        WeLogger.w(TAG, "image message has no resolvable msgSvrId (msgId=${msgInfo.id})")
-                        return null
-                    }
-                val imagePath = WeMessageApi.downloadImage(svrId)
-                    ?: return null
-                val cached = copyMediaToCache(imagePath) ?: return null
+                val sourcePath = svrId?.let { WeMessageApi.downloadImage(it) }
+                    ?: WeMessageApi.resolveExistingImageByPath(msgInfo.imagePath.orEmpty())
+
+                if (sourcePath == null) {
+                    WeLogger.w(
+                        TAG,
+                        "image resolve failed (msgId=${msgInfo.id}, svrId=$svrId, imgPath=${msgInfo.imagePath})"
+                    )
+                    return null
+                }
+                val cached = copyMediaToCache(sourcePath) ?: return null
                 MessageSegment(type = ScheduleMessageType.IMAGE, filePath = cached)
             }
             MessageType.VOICE -> {

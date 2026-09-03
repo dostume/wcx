@@ -618,6 +618,56 @@ object WeMessageApi : ApiFeature(), IResolveDex {
     }
 
     /**
+     * 按本地 msgId 从 message 表加载完整的 MsgInfo 实例（微信自身 convertFrom 填充全部字段）。
+     * 多选等 UI 场景拿到的消息对象可能只填充了部分字段，用此方法可换取权威数据。
+     * @return 完整的微信 MsgInfo 实例；查不到或出错返回 null
+     */
+    fun getMsgInfoInstanceByMsgId(msgId: Long): Any? {
+        return try {
+            WeDatabaseApi.rawQuery("SELECT * FROM message WHERE msgId=?", arrayOf(msgId)).use { cursor ->
+                if (cursor.moveToFirst()) convertMsgInfoInstanceFromCursor(cursor) else null
+            }
+        } catch (e: Exception) {
+            WeLogger.e(TAG, "getMsgInfoInstanceByMsgId failed (msgId=$msgId)", e)
+            null
+        }
+    }
+
+    /**
+     * 兜底匹配: 按会话+创建时间+类型+发送方向定位本地 msgId。
+     * 用于消息对象连 msgId 都缺失的场景；同秒多条同类型消息时可能匹配到相邻那条。
+     */
+    fun findMsgIdByAttributes(talker: String, createTime: Long, typeCode: Int, isSend: Int): Long? {
+        if (talker.isBlank() || createTime <= 0L) return null
+        return try {
+            WeDatabaseApi.rawQuery(
+                "SELECT msgId FROM message WHERE talker=? AND createTime=? AND type=? AND isSend=? ORDER BY msgId LIMIT 1",
+                arrayOf(talker, createTime, typeCode, isSend)
+            ).use { cursor ->
+                if (cursor.moveToFirst()) cursor.getLong(0) else null
+            }
+        } catch (e: Exception) {
+            WeLogger.e(TAG, "findMsgIdByAttributes failed (talker=$talker, createTime=$createTime, type=$typeCode)", e)
+            null
+        }
+    }
+
+    /**
+     * 按相对路径解析已落地的 image2 大图文件（不触发 CDN 下载）。
+     * @return 绝对路径；文件不存在或路径非法（如 THUMBNAIL 缩略图）返回 null
+     */
+    fun resolveExistingImageByPath(bigImgPath: String): String? {
+        if (bigImgPath.isBlank() || bigImgPath.startsWith("THUMBNAIL")) return null
+        return runCatching {
+            resolveImageFile(bigImgPath)
+                ?.takeIf { it.isRegularFile() && it.fileSize() > 0 }
+                ?.absolutePathString()
+        }.onFailure {
+            WeLogger.e(TAG, "resolveExistingImageByPath failed for $bigImgPath", it)
+        }.getOrNull()
+    }
+
+    /**
      * 通过 msgSvrId 反查 talker。仅查 message 表 (C2C/群聊); 企业微信、小程序消息等不在此表中会返回 null。
      */
     fun getTalkerByMsgSvrId(msgSvrId: Long): String? {
