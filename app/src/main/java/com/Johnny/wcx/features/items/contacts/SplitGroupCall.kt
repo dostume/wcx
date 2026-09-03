@@ -505,7 +505,7 @@ object SplitGroupCall : ClickableFeature(), IContactInfoProvider, IResolveDex {
                 WeLogger.e(TAG, "split group call batch aborted", e)
             } finally {
                 runCatching {
-                    DeleteFakeGroups.deleteFakeGroups(generatedIds)
+                    DeleteSplitGroupChats.deleteFakeGroups(generatedIds)
                 }.onFailure { e ->
                     cleanupFailed = true
                     WeLogger.e(TAG, "failed to clean generated fake groups", e)
