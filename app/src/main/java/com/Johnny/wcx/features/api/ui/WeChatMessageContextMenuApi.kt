@@ -408,6 +408,7 @@ object WeChatMessageContextMenuApi : ApiFeature(), IResolveDex {
 
     // a single actionable row in the multi-select dialog, already resolved to a concrete action
     private class MultiSelectRow(
+        val id: Int,
         val text: String,
         val imageVector: ImageVector,
         val onClick: () -> Unit
@@ -423,18 +424,19 @@ object WeChatMessageContextMenuApi : ApiFeature(), IResolveDex {
     ) {
         val allItems = menuItems.values.flatten()
 
+        // 已适配项按菜单 id 降序排列，使较新的功能（如「定时发送」）排在最前
         val adaptedRows = allItems.mapNotNull { item ->
             val support = item.multiSelect as? MultiSelectSupport.Adapted ?: return@mapNotNull null
             if (!support.isSupported(msgInfos)) return@mapNotNull null
-            MultiSelectRow(item.text, item.imageVector) {
+            MultiSelectRow(item.id, item.text, item.imageVector) {
                 support.onClick(view, chattingContext, msgInfos)
             }
-        }
+        }.sortedByDescending { it.id }
 
         val autoRows = allItems.mapNotNull { item ->
             if (item.multiSelect !is MultiSelectSupport.Auto) return@mapNotNull null
             if (msgInfos.isEmpty() || !msgInfos.all { item.isSupported(it) }) return@mapNotNull null
-            MultiSelectRow(item.text, item.imageVector) {
+            MultiSelectRow(item.id, item.text, item.imageVector) {
                 for (msgInfo in msgInfos) {
                     try {
                         item.onClick(view, chattingContext, msgInfo)

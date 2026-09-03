@@ -95,6 +95,8 @@ object ScheduledMessage : ClickableFeature() {
         val id: String,
         val talker: String,
         val talkerName: String,
+        // 任务主题（消息菜单创建时必填；旧数据无该字段，反序列化时取默认空串）
+        val subject: String = "",
         val messageType: MessageType = MessageType.TEXT,
         val content: String = "",
         val filePath: String = "",
@@ -381,18 +383,22 @@ object ScheduledMessage : ClickableFeature() {
         }.onFailure { WeLogger.w(TAG, "cancel alarm failed for ${schedule.id}", it) }
     }
 
-    private fun addSchedule(schedule: ScheduleConfig) {
+    fun addSchedule(schedule: ScheduleConfig) {
         schedules = schedules + schedule
         if (schedule.enabled) {
             scheduleAlarm(schedule)
         }
     }
 
+    fun getSchedulesFor(talker: String): List<ScheduleConfig> {
+        return schedules.filter { it.talker == talker }
+    }
+
     private fun updateSchedule(schedule: ScheduleConfig) {
         schedules = schedules.map { if (it.id == schedule.id) schedule else it }
     }
 
-    private fun deleteSchedule(schedule: ScheduleConfig) {
+    fun deleteSchedule(schedule: ScheduleConfig) {
         cancelAlarm(schedule)
         schedules = schedules.filter { it.id != schedule.id }
     }
@@ -536,8 +542,11 @@ object ScheduledMessage : ClickableFeature() {
                                             } else {
                                                 schedule.messageType.description
                                             }
+                                            // 有主题时前置显示，便于对应消息菜单创建的任务
+                                            val subjectPrefix =
+                                                if (schedule.subject.isBlank()) "" else "「${schedule.subject}」"
                                             Text(
-                                                "${schedule.hour.toString().padStart(2, '0')}:${schedule.minute.toString().padStart(2, '0')} " +
+                                                "$subjectPrefix${schedule.hour.toString().padStart(2, '0')}:${schedule.minute.toString().padStart(2, '0')} " +
                                                         "${if (schedule.repeatDaily) "每天" else "单次"} $summary"
                                             )
                                         },
