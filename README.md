@@ -1,6 +1,8 @@
 # WCX (WeKit) — 微信 Xposed 功能增强模块
 
-> 基于 [Johnny520/wcx](https://github.com/Johnny520/wcx) 的增强分支，在保留上游全部 270+ 功能的基础上，新增**消息定时发送**等能力，并通过 GitHub Actions 每日自动同步上游更新、云端构建正式签名 APK。
+**仓库主页：https://github.com/dostume/wcx** · 下载：[Releases](https://github.com/dostume/wcx/releases)
+
+> 基于上游 WeKit 的增强分支，保留上游全部 270+ 功能，另新增**消息定时发送**等能力。本仓库通过 GitHub Actions 每日自动同步上游更新并云端构建正式签名 APK，点击上方 **Watch/Star** 可第一时间获取新版本（详见下方[自动化构建](#-本仓库自动化构建无需本地环境)）。
 
 ---
 

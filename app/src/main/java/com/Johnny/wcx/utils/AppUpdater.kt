@@ -60,10 +60,10 @@ sealed interface UpdateResult {
 // ─── GitHub Release API ────────────────────────────────────────────────────
 
 private const val GITHUB_API_LATEST =
-    "https://api.github.com/repos/Johnny520/wcx/releases/latest"
+    "https://api.github.com/repos/dostume/wcx/releases/latest"
 private const val GITHUB_API_RELEASES =
-    "https://api.github.com/repos/Johnny520/wcx/releases?per_page=20"
-private const val RELEASES_PAGE = "https://github.com/Johnny520/wcx/releases"
+    "https://api.github.com/repos/dostume/wcx/releases?per_page=20"
+private const val RELEASES_PAGE = "https://github.com/dostume/wcx/releases"
 
 // APKs are published per entry-point flavor: app-<flavor>-<abi>-release.apk.
 // Stay on the same flavor the installed build was compiled for.
@@ -138,9 +138,22 @@ object AppUpdater {
     suspend fun checkForUpdate(): UpdateResult = withContext(Dispatchers.IO) {
         runCatching {
             val release = fetchLatestRelease()
+
+            // CI/正式包内置本次发布对应的 Release tag (BuildConfig.RELEASE_TAG):
+            // 与最新 Release 的 tag 相同即为已最新, 不同即提示更新。可精确覆盖
+            // auto-<sha> 这套无法用 versionCode 比较的发布命名。
+            val myTag = BuildConfig.RELEASE_TAG
+            if (myTag.isNotEmpty()) {
+                return@withContext if (release.tag_name == myTag) {
+                    UpdateResult.UpToDate
+                } else {
+                    UpdateResult.UpdateAvailable(parseUpdateInfo(release))
+                }
+            }
+
+            // 旧版正式包 / 本地开发包 (未注入 RELEASE_TAG): 回退 versionCode 比较
             val updateInfo = parseUpdateInfo(release)
-            val installedCode = BuildConfig.VERSION_CODE
-            if (updateInfo.versionCode > installedCode) {
+            if (updateInfo.versionCode > BuildConfig.VERSION_CODE) {
                 UpdateResult.UpdateAvailable(updateInfo)
             } else {
                 UpdateResult.UpToDate

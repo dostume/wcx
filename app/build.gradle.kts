@@ -36,6 +36,11 @@ android {
     val commitCount = getCommitCount()
     val gitHash = getGitHash()
 
+    // CI 发布时由 Sync Upstream & Build APK 工作流注入本次将发布的 Release tag
+    // (auto-<上游短SHA>), 写入 BuildConfig.RELEASE_TAG 供 AppUpdater 判等,
+    // 避免 auto-* 发布命名下每次启动都误报新版本。本地构建为空字符串。
+    val ciReleaseTag = providers.environmentVariable("WCX_RELEASE_TAG").orElse("").get()
+
     // v194 基线：commitCount 基于 v148，偏移 +26
     // 后续每增加一个 commit，versionCode 自动递增
     val versionBaseOffset = 30  // v210 连号起点（commit 180+30=210，下次 commit 181+30=211）
@@ -49,6 +54,7 @@ android {
 
         buildConfigField("String", "COMMIT_HASH", "\"${gitHash}\"")
         buildConfigField("String", "TAG", "\"WCX\"")
+        buildConfigField("String", "RELEASE_TAG", "\"${ciReleaseTag.replace("\"", "\\\"")}\"")
         buildConfigField("long", "BUILD_TIMESTAMP", "${System.currentTimeMillis()}L")
         buildConfigField("boolean", "BEAUTIFY_ENABLED", "true")
     }
