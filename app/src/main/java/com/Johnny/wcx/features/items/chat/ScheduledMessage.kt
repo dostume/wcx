@@ -41,6 +41,8 @@ import androidx.fragment.app.FragmentActivity
 import com.Johnny.wcx.activity.TransparentActivity
 import com.Johnny.wcx.features.api.core.WeDatabaseApi
 import com.Johnny.wcx.features.api.core.WeMessageApi
+import com.Johnny.wcx.features.api.core.WeServiceApi
+import com.Johnny.wcx.features.api.core.models.MessageInfo
 import com.Johnny.wcx.features.core.ClickableFeature
 import com.Johnny.wcx.features.core.Feature
 import com.Johnny.wcx.utils.HostInfo
@@ -51,6 +53,7 @@ import com.Johnny.wcx.ui.content.DefaultColumn
 import com.Johnny.wcx.ui.content.TextButton
 import com.Johnny.wcx.ui.utils.showComposeDialog
 import com.Johnny.wcx.utils.WeLogger
+import com.Johnny.wcx.utils.AudioUtils
 import com.Johnny.wcx.utils.android.showToast
 import com.Johnny.wcx.utils.fs.KnownPaths
 import kotlinx.coroutines.CoroutineScope
@@ -94,7 +97,12 @@ object ScheduledMessage : ClickableFeature() {
         val type: MessageType,
         val content: String = "",
         val filePath: String = "",
-        val duration: Int = 0
+        val duration: Int = 0,
+        // 复读式引用: 创建时媒体未落地的消息只记录来源 (与转发/复读同一通道),
+        // 发送时按引用从聊天记录现场解析媒体再发出
+        val srcTalker: String = "",
+        val srcMsgId: Long = 0,
+        val srcSvrId: Long = 0
     ) : java.io.Serializable
 
     @Serializable
@@ -360,27 +368,31 @@ object ScheduledMessage : ClickableFeature() {
                 }
             }
             MessageType.IMAGE -> {
-                if (segment.filePath.isNotBlank()) {
-                    WeMessageApi.sendImage(talker, segment.filePath)
-                } else if (segment.content.startsWith(DEFERRED_IMAGE_PREFIX)) {
-                    // 创建任务时 CDN 下载未落地的图片: 发送时再尝试一次下载后发送
-                    val svrId = segment.content.removePrefix(DEFERRED_IMAGE_PREFIX).toLongOrNull()
-                    val path = svrId?.takeIf { it > 0 }?.let { WeMessageApi.downloadImage(it) }
-                    if (path != null) {
-                        WeMessageApi.sendImage(talker, path)
-                    } else {
-                        WeLogger.e(TAG, "deferred image download failed at send time (svrId=$svrId)")
+                when {
+                    segment.filePath.isNotBlank() ->
+                        WeMessageApi.sendImage(talker, segment.filePath)
+                    segment.content.startsWith(DEFERRED_IMAGE_PREFIX) -> {
+                        // 旧版本创建的延迟段: svrId 存在 content 里
+                        val svrId = segment.content.removePrefix(DEFERRED_IMAGE_PREFIX).toLongOrNull() ?: 0
+                        sendImageByReference(talker, segment.srcTalker.ifEmpty { talker }, svrId, segment.srcMsgId)
                     }
+                    segment.srcSvrId > 0 || segment.srcMsgId > 0 ->
+                        // 复读式引用段: 与转发功能同一通道, 发送时从聊天记录现场解析
+                        sendImageByReference(talker, segment.srcTalker.ifEmpty { talker }, segment.srcSvrId, segment.srcMsgId)
                 }
             }
             MessageType.VOICE -> {
                 if (segment.filePath.isNotBlank()) {
                     WeMessageApi.sendVoice(talker, segment.filePath, segment.duration)
+                } else if (segment.srcSvrId > 0 || segment.srcMsgId > 0) {
+                    sendVoiceByReference(talker, segment.srcTalker.ifEmpty { talker }, segment)
                 }
             }
             MessageType.VIDEO -> {
                 if (segment.filePath.isNotBlank()) {
                     WeMessageApi.sendVideo(talker, segment.filePath)
+                } else if (segment.srcSvrId > 0 || segment.srcMsgId > 0) {
+                    sendVideoByReference(talker, segment.srcTalker.ifEmpty { talker }, segment)
                 }
             }
             MessageType.FILE -> {
@@ -389,6 +401,80 @@ object ScheduledMessage : ClickableFeature() {
                     WeMessageApi.sendFile(talker, segment.filePath, fileName)
                 }
             }
+        }
+    }
+
+    /**
+     * 复读式发送: 按引用重建权威消息对象后, 走与 ForwardMessages(转发) 完全相同的通道
+     * (图片 md5 / 语音本地 silk / 视频本地 mp4), 媒体在发送时刻从聊天记录解析。
+     * 本地缓存已被清理时退回 CDN 下载。
+     */
+    private fun resolveSourceInstance(srcTalker: String, svrId: Long, msgId: Long): Any? {
+        return runCatching {
+            when {
+                svrId > 0 -> WeMessageApi.getMsgInfoInstanceByMsgSvrId(svrId, srcTalker.takeIf { it.isNotEmpty() })
+                msgId > 0 -> WeMessageApi.getMsgInfoInstanceByMsgId(msgId)
+                else -> null
+            }
+        }.onFailure {
+            WeLogger.w(TAG, "resolve source instance failed (svrId=$svrId, msgId=$msgId)", it)
+        }.getOrNull()
+    }
+
+    private fun sendImageByReference(talker: String, srcTalker: String, svrId: Long, msgId: Long) {
+        val instance = resolveSourceInstance(srcTalker, svrId, msgId)
+        if (instance != null) {
+            runCatching {
+                val md5 = WeServiceApi.getImageMd5FromMsgInfo(MessageInfo(instance))
+                if (md5.isNotBlank()) {
+                    WeMessageApi.sendImageByMd5(talker, md5, null)
+                    return
+                }
+                WeLogger.w(TAG, "repeat-path image md5 blank (svrId=$svrId)")
+            }.onFailure {
+                WeLogger.w(TAG, "repeat-path image via md5 failed, fallback to cdn (svrId=$svrId)", it)
+            }
+        }
+        // 本地缓存已清理等场景: 退回 CDN 下载
+        val path = svrId.takeIf { it > 0 }?.let { WeMessageApi.downloadImage(it) }
+        if (path != null) {
+            WeMessageApi.sendImage(talker, path)
+        } else {
+            WeLogger.e(TAG, "deferred image failed at send time (svrId=$svrId, msgId=$msgId)")
+        }
+    }
+
+    private fun sendVoiceByReference(talker: String, srcTalker: String, segment: MessageSegment) {
+        val instance = resolveSourceInstance(srcTalker, segment.srcSvrId, segment.srcMsgId)
+        if (instance == null) {
+            WeLogger.e(TAG, "voice source not found at send time (svrId=${segment.srcSvrId}, msgId=${segment.srcMsgId})")
+            return
+        }
+        runCatching {
+            val msgInfo = MessageInfo(instance)
+            val encPath = msgInfo.imagePath ?: error("voice encPath missing")
+            val voicePath = WeMessageApi.getVoiceFullPath(encPath)
+            val durationMs = segment.duration.takeIf { it > 0 }
+                ?: AudioUtils.getDurationMs(voicePath).toInt()
+            WeMessageApi.sendVoice(talker, voicePath, durationMs)
+        }.onFailure {
+            WeLogger.e(TAG, "repeat-path voice failed (svrId=${segment.srcSvrId})", it)
+        }
+    }
+
+    private fun sendVideoByReference(talker: String, srcTalker: String, segment: MessageSegment) {
+        val instance = resolveSourceInstance(srcTalker, segment.srcSvrId, segment.srcMsgId)
+        if (instance == null) {
+            WeLogger.e(TAG, "video source not found at send time (svrId=${segment.srcSvrId}, msgId=${segment.srcMsgId})")
+            return
+        }
+        runCatching {
+            val msgInfo = MessageInfo(instance)
+            val mp4Path = WeServiceApi.getVideoMp4PathFromMsgInfo(msgInfo)
+            if (mp4Path.isBlank()) error("video mp4 path blank")
+            WeMessageApi.sendVideo(talker, mp4Path)
+        }.onFailure {
+            WeLogger.e(TAG, "repeat-path video failed (svrId=${segment.srcSvrId})", it)
         }
     }
 
@@ -461,12 +547,16 @@ object ScheduledMessage : ClickableFeature() {
     }
 
     private fun MessageSegment.summary(): String {
+        val byRef = filePath.isBlank() && (srcSvrId > 0 || srcMsgId > 0)
         return when (type) {
             MessageType.TEXT -> "文本: ${content.take(20)}"
             MessageType.LINK -> "链接: ${content.take(20)}"
-            MessageType.IMAGE -> "图片: ${filePath.substringAfterLast('/').take(20)}"
-            MessageType.VOICE -> "语音: ${duration}ms"
-            MessageType.VIDEO -> "视频: ${filePath.substringAfterLast('/').take(20)}"
+            MessageType.IMAGE ->
+                if (byRef) "图片: 引用原消息" else "图片: ${filePath.substringAfterLast('/').take(20)}"
+            MessageType.VOICE ->
+                if (byRef) "语音: 引用原消息" else "语音: ${duration}ms"
+            MessageType.VIDEO ->
+                if (byRef) "视频: 引用原消息" else "视频: ${filePath.substringAfterLast('/').take(20)}"
             MessageType.FILE -> "文件: ${filePath.substringAfterLast('/').take(20)}"
         }
     }

@@ -131,19 +131,12 @@ object ScheduledMessageMenu : SwitchFeature(),
             val talkerName = runCatching { WeDatabaseApi.getDisplayName(talker) }
                 .getOrDefault(talker)
 
-            // 媒体文件先落盘 moduleCache 再注册任务，防止原文件被微信清理
+            // 复读式创建: 本地已有的媒体顺手备份防清理, 未落地的只记引用, 创建瞬时完成
             val (segments, skipped) = buildSegments(msgInfos) ?: return@launch
 
             withContext(Dispatchers.Main) {
                 if (skipped.isNotEmpty()) {
                     showToast("已跳过无法处理的消息: ${skipped.joinToString("、")}")
-                }
-                val deferredCount = segments.count {
-                    it.type == ScheduleMessageType.IMAGE &&
-                            it.content.startsWith(ScheduledMessage.DEFERRED_IMAGE_PREFIX)
-                }
-                if (deferredCount > 0) {
-                    showToast("其中 $deferredCount 张图片暂未下载成功, 将在发送时自动重试")
                 }
                 showComposeDialog(view.context) {
                     ScheduleConfirmDialogContent(
@@ -238,47 +231,66 @@ object ScheduledMessageMenu : SwitchFeature(),
                 content = msgInfo.quoteMsgActualContent ?: msgInfo.actualContent
             )
             MessageType.IMAGE -> {
-                // serverId 缺失时按本地 msgId 回查; CDN 下载失败再尝试已落地的 image2 大图
-                val svrId = msgInfo.serverId.takeIf { it > 0 }
-                    ?: WeMessageApi.getMsgSvrIdByMsgId(msgInfo.id)
-                val sourcePath = svrId?.let { WeMessageApi.downloadImage(it) }
-                    ?: WeMessageApi.resolveExistingImageByPath(msgInfo.imagePath.orEmpty())
-
+                // 复读式创建: 仅解析本地已落地的图片文件 (不触发 CDN 下载, 创建瞬时完成);
+                // 本地没有则记为引用段, 发送时走与转发相同的通道现场解析
+                val sourcePath = WeMessageApi.resolveExistingImageByPath(msgInfo.imagePath.orEmpty())
                 if (sourcePath != null) {
                     val cached = copyMediaToCache(sourcePath) ?: return null
                     MessageSegment(type = ScheduleMessageType.IMAGE, filePath = cached)
-                } else if (svrId != null) {
-                    // 暂时下载不到 (微信丢弃下载请求/CDN 暂不可达): 记为延迟段, 发送时自动重试,
-                    // 不再让整个任务创建失败
-                    WeLogger.w(TAG, "image download deferred to send time (msgId=${msgInfo.id}, svrId=$svrId)")
+                } else {
+                    val svrId = msgInfo.serverId.takeIf { it > 0 }
+                        ?: WeMessageApi.getMsgSvrIdByMsgId(msgInfo.id)
+                    if (svrId == null && msgInfo.id <= 0) {
+                        WeLogger.w(TAG, "image has no resolvable reference (imgPath=${msgInfo.imagePath})")
+                        return null
+                    }
+                    WeLogger.i(TAG, "image recorded as reference segment (msgId=${msgInfo.id}, svrId=$svrId)")
                     MessageSegment(
                         type = ScheduleMessageType.IMAGE,
                         filePath = "",
-                        content = ScheduledMessage.DEFERRED_IMAGE_PREFIX + svrId
+                        srcTalker = msgInfo.talker,
+                        srcMsgId = msgInfo.id,
+                        srcSvrId = svrId ?: 0
                     )
-                } else {
-                    WeLogger.w(
-                        TAG,
-                        "image resolve failed completely (msgId=${msgInfo.id}, imgPath=${msgInfo.imagePath})"
-                    )
-                    return null
                 }
             }
             MessageType.VOICE -> {
-                val encPath = msgInfo.imagePath ?: return null
-                val voicePath = WeMessageApi.getVoiceFullPath(encPath)
-                val cached = copyMediaToCache(voicePath) ?: return null
-                MessageSegment(
-                    type = ScheduleMessageType.VOICE,
-                    filePath = cached,
-                    duration = AudioUtils.getDurationMs(voicePath).toInt()
-                )
+                // 语音未落地时记为引用段 (发送时现场解析本地 silk 文件)
+                val voicePath = msgInfo.imagePath?.let { WeMessageApi.getVoiceFullPath(it) }
+                if (voicePath != null && java.io.File(voicePath).exists()) {
+                    val cached = copyMediaToCache(voicePath) ?: return null
+                    MessageSegment(
+                        type = ScheduleMessageType.VOICE,
+                        filePath = cached,
+                        duration = AudioUtils.getDurationMs(voicePath).toInt()
+                    )
+                } else {
+                    WeLogger.i(TAG, "voice recorded as reference segment (msgId=${msgInfo.id})")
+                    MessageSegment(
+                        type = ScheduleMessageType.VOICE,
+                        filePath = "",
+                        srcTalker = msgInfo.talker,
+                        srcMsgId = msgInfo.id,
+                        srcSvrId = msgInfo.serverId.takeIf { it > 0 } ?: 0
+                    )
+                }
             }
             MessageType.VIDEO, MessageType.MICRO_VIDEO -> {
-                val videoPath = WeServiceApi.getVideoMp4PathFromMsgInfo(msgInfo)
-                if (videoPath.isBlank()) return null
-                val cached = copyMediaToCache(videoPath) ?: return null
-                MessageSegment(type = ScheduleMessageType.VIDEO, filePath = cached)
+                // 视频未落地时记为引用段 (发送时现场解析本地 mp4)
+                val videoPath = runCatching { WeServiceApi.getVideoMp4PathFromMsgInfo(msgInfo) }.getOrNull()
+                if (!videoPath.isNullOrBlank() && java.io.File(videoPath).exists()) {
+                    val cached = copyMediaToCache(videoPath) ?: return null
+                    MessageSegment(type = ScheduleMessageType.VIDEO, filePath = cached)
+                } else {
+                    WeLogger.i(TAG, "video recorded as reference segment (msgId=${msgInfo.id})")
+                    MessageSegment(
+                        type = ScheduleMessageType.VIDEO,
+                        filePath = "",
+                        srcTalker = msgInfo.talker,
+                        srcMsgId = msgInfo.id,
+                        srcSvrId = msgInfo.serverId.takeIf { it > 0 } ?: 0
+                    )
+                }
             }
             MessageType.FILE -> {
                 val filePath = WeMessageApi.downloadFile(msgInfo.instance) ?: return null
