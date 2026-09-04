@@ -250,3 +250,18 @@ lint {
 - **注意**：本机 shell 环境变量代理可能失效（CONNECT 502），API 调用要显式
   `--proxy http://127.0.0.1:10809`（git 全局配置的那个）；创建仓库/上传 Secret 用
   git credential fill 取 token + GitHub API（Secret 需 PyNaCl sealed box 加密）
+
+## CI 排障实录（2026-09-04，已闭环）
+
+1. **bsh/reflekt 是 gitlink 不是源码**：上游"清空历史后的唯一提交"把 `libs/common/bsh`、
+   `libs/common/reflekt` 记为无 `.gitmodules` 的 gitlink（mode 160000），克隆/归档取不到源码，
+   CI 端报 `No matching variant of project ':libs:common:bsh' ... No variants exist`。
+   修复：`git rm --cached` 后把本地影子副本按普通目录入库（`build/` 由各自 .gitignore 排除）。
+2. **com.github 组必须强制走 jitpack**：腾讯 maven-public 可能残留这些组的元数据（缓存 poisoning），
+   Gradle 命中模块描述符后不再尝试其他仓库 → `Could not find rhino-xxx.jar ... Searched in tencent`。
+   修复（settings.gradle.kts）：jitpack 块放在通用镜像**之前**，同时给镜像加
+   `excludeGroup("com.github.Ujhhgtg" / "com.github.Ujhhgtg.rhino" / "com.github.topjohnwu.libsu")`。
+3. **Actions 日志 API 403**：jobs/{id}/logs 302 到 Azure Blob，请求库会把 Authorization 头带过去被拒；
+   重定向到非 github.com 域时必须剥掉该头。日志刚结束时可能 404，等几分钟再取。
+4. 产物核验：artifact zip 内 4 个 APK 与本地字节数几乎一致；签名对比用
+   `apksigner verify --print-certs`，CI 与本地证书 SHA-256 应完全相同（同一 keystore）。
