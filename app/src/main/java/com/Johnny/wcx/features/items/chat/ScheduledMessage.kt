@@ -459,8 +459,17 @@ object ScheduledMessage : ClickableFeature() {
             val msgInfo = MessageInfo(instance)
             val encPath = msgInfo.imagePath ?: error("voice encPath missing")
             val voicePath = WeMessageApi.getVoiceFullPath(encPath)
+            // 微信语音仅在落盘后可重发; 文件不存在时 getDurationMs(JNI) 行为不可控, 先行拦截
+            if (!java.io.File(voicePath).exists()) {
+                WeLogger.e(TAG, "voice file not on disk at send time (path=$voicePath, svrId=${segment.srcSvrId})")
+                return
+            }
             val durationMs = segment.duration.takeIf { it > 0 }
                 ?: AudioUtils.getDurationMs(voicePath).toInt()
+            if (durationMs <= 0) {
+                WeLogger.e(TAG, "voice duration unavailable at send time (path=$voicePath)")
+                return
+            }
             WeMessageApi.sendVoice(talker, voicePath, durationMs)
         }.onFailure {
             WeLogger.e(TAG, "repeat-path voice failed (svrId=${segment.srcSvrId})", it)
@@ -477,6 +486,7 @@ object ScheduledMessage : ClickableFeature() {
             val msgInfo = MessageInfo(instance)
             val mp4Path = WeServiceApi.getVideoMp4PathFromMsgInfo(msgInfo)
             if (mp4Path.isBlank()) error("video mp4 path blank")
+            if (!java.io.File(mp4Path).exists()) error("video mp4 not on disk at send time: $mp4Path")
             WeMessageApi.sendVideo(talker, mp4Path)
         }.onFailure {
             WeLogger.e(TAG, "repeat-path video failed (svrId=${segment.srcSvrId})", it)
