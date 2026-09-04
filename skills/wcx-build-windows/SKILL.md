@@ -233,3 +233,20 @@ lint {
 - 删 `-keepattributes SourceFile,LineNumberTable` 无收益（0MB），勿浪费时间
 - kotlin.reflect 的整体 keep 有 `IllegalStateException` 风险注释，勿轻易裁
 - 改后验证法：解包 APK grep 中文字符串常量（`定时发送` 等）+ 核对 GeneratedMethodHashes 条目数不变
+
+## 云端构建（GitHub Actions，2026-09 接入）
+
+仓库 `https://github.com/dostume/wcx` 已配置 `.github/workflows/build-release.yml`：
+
+- **触发**：push 到 `master`/`main` 自动构建；打 `v*` tag 额外发布 GitHub Release 并附 4 个 APK；
+  手动触发用 workflow_dispatch
+- **环境**：`ubuntu-latest` + Temurin JDK 21 + `gradle/actions/setup-gradle@v4`；
+  `checkout` 必须 `fetch-depth: 0`（build.gradle.kts 用 git rev-parse 生成 COMMIT_HASH）
+- **签名**：仓库 Secret `WEKIT_KEYSTORE_BASE64` 存有本机 `~/.wcx/wcx-keystore.jks` 的 base64，
+  workflow 里解码到 `$HOME/wcx-keystore.jks`（build.gradle 默认搜索路径之一），密码走
+  build.gradle 里的默认值 `wcx-store-pass`/alias `wcx`，产出与本地**完全相同签名**的 APK，
+  可直接覆盖安装；删掉 Secret 则自动回退 debug 签名
+- **产物位置**：Actions 运行页的 Artifacts（`wcx-apks-<sha>`，4 个 APK）；tag 构建在 Releases 页
+- **注意**：本机 shell 环境变量代理可能失效（CONNECT 502），API 调用要显式
+  `--proxy http://127.0.0.1:10809`（git 全局配置的那个）；创建仓库/上传 Secret 用
+  git credential fill 取 token + GitHub API（Secret 需 PyNaCl sealed box 加密）
