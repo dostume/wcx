@@ -169,6 +169,11 @@ object ScheduledMessage : ClickableFeature() {
     }
     private val activeAlarms = ConcurrentHashMap<String, PendingIntent>()
     private val timerJobs = ConcurrentHashMap<String, Job>()
+    // 在途互斥: 进程内定时器与 AlarmManager 闹钟会在同一时刻先后触发,
+    // 时间守卫只能挡"提前触发"; 若第一个触发者正在发送(媒体解析/下载可能耗时数十秒),
+    // 第二个触发者重读任务时 nextSendTime 尚未推进, 守卫照样放行 → 重复发送。
+    // 发送开始前占位、结束后释放, 保证同一任务同一时刻只有一个触发者在执行。
+    private val triggering = ConcurrentHashMap.newKeySet<String>()
     private lateinit var alarmReceiver: BroadcastReceiver
 
     override fun onEnable() {
@@ -329,29 +334,37 @@ object ScheduledMessage : ClickableFeature() {
         }
         WeLogger.i(TAG, "scheduled trigger fired for ${schedule.id} (next=${schedule.nextSendTime}, now=$nowMs)")
 
-        runCatching {
-            if (schedule.segments.isNotEmpty()) {
-                schedule.segments.forEachIndexed { index, segment ->
-                    sendSegment(schedule.talker, segment)
-                    if (index < schedule.segments.size - 1) {
-                        delay(500)
+        if (!triggering.add(scheduleId)) {
+            WeLogger.i(TAG, "trigger for ${schedule.id} already in flight, skipping duplicate")
+            return
+        }
+        try {
+            runCatching {
+                if (schedule.segments.isNotEmpty()) {
+                    schedule.segments.forEachIndexed { index, segment ->
+                        sendSegment(schedule.talker, segment)
+                        if (index < schedule.segments.size - 1) {
+                            delay(500)
+                        }
                     }
+                } else {
+                    sendLegacySingle(schedule)
                 }
-            } else {
-                sendLegacySingle(schedule)
+
+                WeLogger.i(TAG, "scheduled message sent to ${schedule.talker}")
+            }.onFailure {
+                WeLogger.e(TAG, "failed to send scheduled message", it)
             }
 
-            WeLogger.i(TAG, "scheduled message sent to ${schedule.talker}")
-        }.onFailure {
-            WeLogger.e(TAG, "failed to send scheduled message", it)
-        }
-
-        if (schedule.oneTimeOnly) {
-            schedule.enabled = false
-            updateSchedule(schedule)
-            cancelAlarm(schedule)
-        } else if (schedule.repeatDaily) {
-            scheduleAlarm(schedule)
+            if (schedule.oneTimeOnly) {
+                schedule.enabled = false
+                updateSchedule(schedule)
+                cancelAlarm(schedule)
+            } else if (schedule.repeatDaily) {
+                scheduleAlarm(schedule)
+            }
+        } finally {
+            triggering.remove(scheduleId)
         }
     }
 
