@@ -1850,7 +1850,10 @@ object WeMessageApi : ApiFeature(), IResolveDex {
      * 在真正写入文件字节 *之前* 就从 SERVERID:// 改写为最终文件名, 所以只能以磁盘上文件是否存在为准。
      */
     private fun ensureImageCachedFile(msgSvrId: Long): Path? {
-        val baseRow = queryImgInfoRow(msgSvrId) ?: return null
+        val baseRow = queryImgInfoRow(msgSvrId) ?: run {
+            WeLogger.w(TAG, "no ImgInfo2 row for msgSvrId=$msgSvrId")
+            return null
+        }
 
         // 有原图行则优先下载原图, 否则退回基础行
         val targetRow = baseRow.hdImgId.takeIf { it > 0 }
@@ -1861,9 +1864,24 @@ object WeMessageApi : ApiFeature(), IResolveDex {
         // 已在磁盘上则直接返回
         resolveExistingImageFile(targetRow)?.let { return it }
 
-        // 触发 CDN 下载, 轮询直到文件真正落地。talker 用基础行的 (原图行可能未存 msgTalker)。
-        if (!triggerDownload(targetRow.localId, targetRow.talker.ifEmpty { baseRow.talker })) return null
-        return pollUntilImageFileExists(targetRow.localId)
+        val talker = targetRow.talker.ifEmpty { baseRow.talker }
+        WeLogger.i(TAG, "start cdn download: svrId=$msgSvrId localId=${targetRow.localId} talker=$talker")
+
+        // 分 3 轮触发下载并各轮询 20 秒: 实测单次触发可能被微信静默丢弃, 周期性重发更可靠;
+        // 总超时 60 秒 (原先单次触发 + 空轮询 120 秒)
+        repeat(3) { round ->
+            if (!triggerDownload(targetRow.localId, talker)) {
+                WeLogger.w(TAG, "triggerDownload invoke failed (round ${round + 1}, svrId=$msgSvrId)")
+            }
+            val deadline = System.currentTimeMillis() + 20_000
+            while (System.currentTimeMillis() < deadline) {
+                Thread.sleep(1000)
+                val row = queryImgInfoRowById(targetRow.localId) ?: continue
+                resolveExistingImageFile(row)?.let { return it }
+            }
+            WeLogger.w(TAG, "image not landed after round ${round + 1} (svrId=$msgSvrId)")
+        }
+        return null
     }
 
     /**
@@ -1922,16 +1940,6 @@ object WeMessageApi : ApiFeature(), IResolveDex {
     }
 
     /** 轮询直到该 ImgInfo2 行的图片文件真正落地到磁盘 (以文件存在为准, 而非 iscomplete 标志)。 */
-    private fun pollUntilImageFileExists(imgLocalId: Long): Path? {
-        val deadline = System.currentTimeMillis() + 120_000
-        while (System.currentTimeMillis() < deadline) {
-            Thread.sleep(1000)
-            val row = queryImgInfoRowById(imgLocalId) ?: continue
-            resolveExistingImageFile(row)?.let { return it }
-        }
-        return null
-    }
-
     private fun decodeAndSave(file: Path): String? {
         return try {
             val bytes = file.readBytes()

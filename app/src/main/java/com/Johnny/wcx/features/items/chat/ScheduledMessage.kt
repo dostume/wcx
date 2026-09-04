@@ -59,6 +59,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.nio.file.Files
@@ -79,6 +80,12 @@ object ScheduledMessage : ClickableFeature() {
     private const val TAG = "ScheduledMessage"
     private const val ALARM_ACTION = "com.Johnny.wcx.SCHEDULED_MESSAGE"
     private const val EXTRA_SCHEDULE_ID = "schedule_id"
+
+    /**
+     * IMAGE 段 filePath 为空时, content 存 "svr:<msgSvrId>" 作为延迟下载标记:
+     * 创建任务时图片 CDN 下载未落地不再让整个任务创建失败, 发送时自动重试下载。
+     */
+    const val DEFERRED_IMAGE_PREFIX = "svr:"
 
     private val json = Json { ignoreUnknownKeys = true }
 
@@ -119,7 +126,39 @@ object ScheduledMessage : ClickableFeature() {
         LINK("链接")
     }
 
-    private var schedules by prefOption("scheduled_messages", emptyList<ScheduleConfig>())
+    // 存储改用 kotlinx JSON (ignoreUnknownKeys=true): 原先的 Java 序列化对类结构零容忍,
+    // ScheduleConfig 每加一个字段 serialVersionUID 就变, 导致旧任务整批读不出
+    // (InvalidClassException: stream classdesc serialVersionUID 与 local 不一致)
+    private var schedulesJson by prefOption("scheduled_messages_json", "")
+
+    // 旧版 Java 序列化存储, 仅用于一次性迁移最近版本写入的任务
+    private var legacySchedules by prefOption("scheduled_messages", emptyList<ScheduleConfig>())
+
+    private var schedules: List<ScheduleConfig>
+        get() {
+            val raw = schedulesJson
+            if (raw.isNotBlank()) {
+                return runCatching { json.decodeFromString<List<ScheduleConfig>>(raw) }
+                    .onFailure { WeLogger.e(TAG, "failed to parse schedules json", it) }
+                    .getOrDefault(emptyList())
+            }
+            return migrateLegacySchedules()
+        }
+        set(value) {
+            schedulesJson = runCatching { json.encodeToString(value) }
+                .onFailure { WeLogger.e(TAG, "failed to encode schedules json", it) }
+                .getOrDefault("[]")
+        }
+
+    private fun migrateLegacySchedules(): List<ScheduleConfig> {
+        val legacy = runCatching { legacySchedules }
+            .onFailure { WeLogger.e(TAG, "failed to read legacy schedules", it) }
+            .getOrDefault(emptyList())
+        if (legacy.isEmpty()) return emptyList()
+        WeLogger.i(TAG, "migrated ${legacy.size} legacy schedules to json storage")
+        schedules = legacy
+        return legacy
+    }
     private val activeAlarms = ConcurrentHashMap<String, PendingIntent>()
     private val timerJobs = ConcurrentHashMap<String, Job>()
     private lateinit var alarmReceiver: BroadcastReceiver
@@ -323,6 +362,15 @@ object ScheduledMessage : ClickableFeature() {
             MessageType.IMAGE -> {
                 if (segment.filePath.isNotBlank()) {
                     WeMessageApi.sendImage(talker, segment.filePath)
+                } else if (segment.content.startsWith(DEFERRED_IMAGE_PREFIX)) {
+                    // 创建任务时 CDN 下载未落地的图片: 发送时再尝试一次下载后发送
+                    val svrId = segment.content.removePrefix(DEFERRED_IMAGE_PREFIX).toLongOrNull()
+                    val path = svrId?.takeIf { it > 0 }?.let { WeMessageApi.downloadImage(it) }
+                    if (path != null) {
+                        WeMessageApi.sendImage(talker, path)
+                    } else {
+                        WeLogger.e(TAG, "deferred image download failed at send time (svrId=$svrId)")
+                    }
                 }
             }
             MessageType.VOICE -> {

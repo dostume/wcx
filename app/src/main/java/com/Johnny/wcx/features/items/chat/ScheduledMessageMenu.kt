@@ -138,6 +138,13 @@ object ScheduledMessageMenu : SwitchFeature(),
                 if (skipped.isNotEmpty()) {
                     showToast("已跳过无法处理的消息: ${skipped.joinToString("、")}")
                 }
+                val deferredCount = segments.count {
+                    it.type == ScheduleMessageType.IMAGE &&
+                            it.content.startsWith(ScheduledMessage.DEFERRED_IMAGE_PREFIX)
+                }
+                if (deferredCount > 0) {
+                    showToast("其中 $deferredCount 张图片暂未下载成功, 将在发送时自动重试")
+                }
                 showComposeDialog(view.context) {
                     ScheduleConfirmDialogContent(
                         talker = talker,
@@ -237,15 +244,25 @@ object ScheduledMessageMenu : SwitchFeature(),
                 val sourcePath = svrId?.let { WeMessageApi.downloadImage(it) }
                     ?: WeMessageApi.resolveExistingImageByPath(msgInfo.imagePath.orEmpty())
 
-                if (sourcePath == null) {
+                if (sourcePath != null) {
+                    val cached = copyMediaToCache(sourcePath) ?: return null
+                    MessageSegment(type = ScheduleMessageType.IMAGE, filePath = cached)
+                } else if (svrId != null) {
+                    // 暂时下载不到 (微信丢弃下载请求/CDN 暂不可达): 记为延迟段, 发送时自动重试,
+                    // 不再让整个任务创建失败
+                    WeLogger.w(TAG, "image download deferred to send time (msgId=${msgInfo.id}, svrId=$svrId)")
+                    MessageSegment(
+                        type = ScheduleMessageType.IMAGE,
+                        filePath = "",
+                        content = ScheduledMessage.DEFERRED_IMAGE_PREFIX + svrId
+                    )
+                } else {
                     WeLogger.w(
                         TAG,
-                        "image resolve failed (msgId=${msgInfo.id}, svrId=$svrId, imgPath=${msgInfo.imagePath})"
+                        "image resolve failed completely (msgId=${msgInfo.id}, imgPath=${msgInfo.imagePath})"
                     )
                     return null
                 }
-                val cached = copyMediaToCache(sourcePath) ?: return null
-                MessageSegment(type = ScheduleMessageType.IMAGE, filePath = cached)
             }
             MessageType.VOICE -> {
                 val encPath = msgInfo.imagePath ?: return null
