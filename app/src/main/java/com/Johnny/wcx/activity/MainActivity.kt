@@ -79,6 +79,7 @@ import com.Johnny.wcx.utils.formatEpoch
 import com.Johnny.wcx.utils.hook_status.HookStatus
 import com.Johnny.wcx.utils.openInSystem
 import com.Johnny.wcx.utils.registerBshSnapshotDecompileLaunchers
+import java.io.IOException
 import kotlin.concurrent.thread
 
 class MainActivity : ComponentActivity() {
@@ -93,6 +94,48 @@ class MainActivity : ComponentActivity() {
             isLaunchingWeChat = false
             finishAndRemoveTask()
         }
+    }
+
+    // 不同 root 方案 (Magisk/KernelSU/APatch) 的 su 挂载路径不同,
+    // 部分 ROM 还会裁剪应用进程的 PATH, 导致裸 "su" 直接抛 IOException,
+    // 因此按常见挂载点逐一尝试, 全部失败再交给 libsu 自动探测兜底
+    private val SU_CANDIDATES = listOf(
+        "su",
+        "/system/bin/su",
+        "/system/xbin/su",
+        "/sbin/su",
+        "/su/bin/su",
+        "/magisk/.core/bin/su",
+        "/debug_ramdisk/su",
+        "/data/adb/ksu/bin/su",
+        "/data/adb/ap/bin/su",
+    )
+
+    /**
+     * 依次尝试各候选路径拉起 su 执行命令。
+     * @param suArgs 传给 su 本身的参数 (如 -c/-mm 及其命令串), 不含 su 路径
+     * @param libsuCmd 所有 su 候选路径都无法启动时, 交给 libsu 执行的命令
+     * @return (退出码, 输出), 所有通道都拉不起 su 时返回 null
+     */
+    private fun execSu(suArgs: List<String>, libsuCmd: String): Pair<Int, String>? {
+        for (su in SU_CANDIDATES) {
+            try {
+                val proc = ProcessBuilder(su, *suArgs.toTypedArray())
+                    .redirectErrorStream(true)
+                    .start()
+                val output = proc.inputStream.bufferedReader().readText()
+                return proc.waitFor() to output.trim()
+            } catch (_: IOException) {
+                // 该路径不存在或不可执行, 继续尝试下一个候选
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+                return null
+            }
+        }
+        return runCatching {
+            val result = Shell.cmd(libsuCmd).exec()
+            result.code to (result.out + result.err).joinToString("\n").trim()
+        }.getOrNull()
     }
 
     @Composable
@@ -348,24 +391,18 @@ class MainActivity : ComponentActivity() {
                         val userId = androidUserId
                         val hostPkg =
                             prefs.getString("host_pkg_name", PackageNames.WECHAT)!!
-                        // Shell.isAppGrantedRoot() 只反映进程首次建壳时的结果且会被缓存,
-                        // 用户事后在授权管理里补授 root 不会刷新, 会一直误报无 root。
-                        // 这里改为每次点击直接发起 su 请求, 由授权管理实时判定
+                        // 不用 Shell.isAppGrantedRoot() 的过期缓存, 每次点击直接实时拉起 su
                         thread {
-                            val outcome = runCatching {
-                                val proc = ProcessBuilder(
-                                    "su", "-c",
-                                    "am force-stop --user $userId $hostPkg && " +
-                                            "am start --user $userId -n $hostPkg/${PackageNames.WECHAT}.ui.LauncherUI"
-                                ).redirectErrorStream(true).start()
-                                val output = proc.inputStream.bufferedReader().readText()
-                                proc.waitFor() to output.trim()
-                            }.getOrNull()
+                            val forceStopCmd =
+                                "am force-stop --user $userId $hostPkg && " +
+                                        "am start --user $userId -n $hostPkg/${PackageNames.WECHAT}.ui.LauncherUI"
+                            val outcome = execSu(listOf("-c", forceStopCmd), forceStopCmd)
 
                             runOnUiThread {
                                 when {
                                     outcome == null ->
-                                        shortcutError = "无法执行 su, 请确认设备已 root"
+                                        shortcutError = "无法拉起 su: 本应用可能被 root 管理器的" +
+                                                "排除名单(DenyList)/隐藏应用屏蔽, 或设备未 root。请检查后重试"
                                     outcome.first == 0 ->
                                         finishAndRemoveTask()
                                     outcome.second.isEmpty() ||
@@ -532,22 +569,18 @@ class MainActivity : ComponentActivity() {
                         confirmButton = {
                             Button(onClick = {
                                 showConfirmDeleteTinkerDialog = false
-                                // 不用 isAppGrantedRoot() 的过期缓存, 直接发起 su 实时判定
+                                // 不用 isAppGrantedRoot() 的过期缓存, 直接拉起 su 实时判定
                                 thread {
                                     val failed = paths.mapNotNull { path ->
-                                        runCatching {
-                                            val proc = ProcessBuilder(
-                                                "su", "-mm", "-c",
-                                                "if [ -d '$path' ]; then " +
-                                                        "find '$path' -mindepth 1 -exec rm -rf {} + ; " +
-                                                        "chmod -R 000 '$path' ; " +
-                                                        "fi"
-                                            )
-                                                .redirectErrorStream(true)
-                                                .start()
-                                            val output = proc.inputStream.bufferedReader().readText()
-                                            if (proc.waitFor() == 0) null else path to output.trim()
-                                        }.getOrElse { e -> path to (e.message ?: "执行失败") }
+                                        val cmd =
+                                            "if [ -d '$path' ]; then " +
+                                                    "find '$path' -mindepth 1 -exec rm -rf {} + ; " +
+                                                    "chmod -R 000 '$path' ; " +
+                                                    "fi"
+                                        when (val r = execSu(listOf("-mm", "-c", cmd), cmd)) {
+                                            null -> path to "无法拉起 su (可能被 root 管理器排除名单屏蔽或未 root)"
+                                            else -> if (r.first == 0) null else path to r.second
+                                        }
                                     }
                                     runOnUiThread {
                                         when {
@@ -596,17 +629,14 @@ class MainActivity : ComponentActivity() {
                         confirmButton = {
                             Button(onClick = {
                                 showConfirmDeleteModuleDataDialog = false
-                                // 不用 isAppGrantedRoot() 的过期缓存, 直接发起 su 实时判定
+                                // 不用 isAppGrantedRoot() 的过期缓存, 直接拉起 su 实时判定
                                 thread {
                                     val failed = paths.mapNotNull { path ->
-                                        runCatching {
-                                            // if using Shell.cmd or su -c without -mm, the view of /data/user/0 is restricted
-                                            val proc = ProcessBuilder("su", "-mm", "-c", "rm -rf $path")
-                                                .redirectErrorStream(true)
-                                                .start()
-                                            val output = proc.inputStream.bufferedReader().readText()
-                                            if (proc.waitFor() == 0) null else path to output.trim()
-                                        }.getOrElse { e -> path to (e.message ?: "执行失败") }
+                                        // if using Shell.cmd or su -c without -mm, the view of /data/user/0 is restricted
+                                        when (val r = execSu(listOf("-mm", "-c", "rm -rf $path"), "rm -rf $path")) {
+                                            null -> path to "无法拉起 su (可能被 root 管理器排除名单屏蔽或未 root)"
+                                            else -> if (r.first == 0) null else path to r.second
+                                        }
                                     }
                                     runOnUiThread {
                                         when {
