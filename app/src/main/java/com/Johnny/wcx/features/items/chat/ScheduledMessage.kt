@@ -679,6 +679,10 @@ object ScheduledMessage : ClickableFeature() {
             var showAddDialog by remember { mutableStateOf(false) }
             var showEditDialog by remember { mutableStateOf(false) }
             var editingSchedule by remember { mutableStateOf<ScheduleConfig?>(null) }
+            // 本地可观察快照: schedules 每次访问都会重新解析 JSON, 不是可观察状态,
+            // 开关/增删改后必须刷新本快照才能驱动列表 UI 即时重组
+            var taskItems by remember { mutableStateOf(schedules) }
+            fun refreshTasks() { taskItems = schedules }
 
             if (showAddDialog) {
                 ScheduleEditorDialog(
@@ -687,6 +691,7 @@ object ScheduledMessage : ClickableFeature() {
                         addSchedule(schedule)
                         showToast("定时任务已添加")
                         showAddDialog = false
+                        refreshTasks()
                     }
                 )
             } else if (showEditDialog && editingSchedule != null) {
@@ -698,6 +703,7 @@ object ScheduledMessage : ClickableFeature() {
                         if (schedule.enabled) scheduleAlarm(schedule)
                         showToast("定时任务已更新")
                         showEditDialog = false
+                        refreshTasks()
                     },
                     existing = editingSchedule!!
                 )
@@ -706,14 +712,14 @@ object ScheduledMessage : ClickableFeature() {
                     title = { Text("定时发送消息") },
                     text = {
                         DefaultColumn(scrollable = true) {
-                            if (schedules.isEmpty()) {
+                            if (taskItems.isEmpty()) {
                                 Text(
                                     "还没有定时任务，点击下方按钮添加",
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     modifier = Modifier.padding(vertical = 16.dp)
                                 )
                             } else {
-                                schedules.forEach { schedule ->
+                                taskItems.forEach { schedule ->
                                     ListItem(
                                         modifier = Modifier.clickable {
                                             editingSchedule = schedule
@@ -738,13 +744,17 @@ object ScheduledMessage : ClickableFeature() {
                                             Switch(
                                                 checked = schedule.enabled,
                                                 onCheckedChange = { enabled ->
-                                                    schedule.enabled = enabled
+                                                    // 先写本地副本并持久化, 再刷新快照驱动开关即时翻转
+                                                    val updated = schedule.copy(enabled = enabled)
                                                     if (enabled) {
-                                                        scheduleAlarm(schedule)
+                                                        scheduleAlarm(updated)
                                                     } else {
-                                                        cancelAlarm(schedule)
+                                                        cancelAlarm(updated)
                                                     }
-                                                    updateSchedule(schedule)
+                                                    updateSchedule(updated)
+                                                    taskItems = taskItems.map {
+                                                        if (it.id == updated.id) updated else it
+                                                    }
                                                 }
                                             )
                                         }
