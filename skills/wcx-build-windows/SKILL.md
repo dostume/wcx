@@ -265,3 +265,22 @@ lint {
    重定向到非 github.com 域时必须剥掉该头。日志刚结束时可能 404，等几分钟再取。
 4. 产物核验：artifact zip 内 4 个 APK 与本地字节数几乎一致；签名对比用
    `apksigner verify --print-certs`，CI 与本地证书 SHA-256 应完全相同（同一 keystore）。
+
+## 纯云端流程（2026-09-04 接入，无需本地环境）
+
+新增 `.github/workflows/sync-upstream.yml`（Actions 页手动触发 workflow_dispatch）：
+
+- **能力**：拉取上游 `Johnny520/wcx` 最新 master → 自动合并本仓库
+  （`dostume/wcx`）的定时发送等改动 → 构建 4 个 Release APK 上传 Artifacts
+  → 把合并结果推回本仓库 master（供下次增量同步）
+- **上游无新提交**：跳过推送，仍执行构建并上传 APK（也可当纯手动出包入口）
+- **合并冲突**：工作流会 `git merge --abort` 并在 Step Summary 列出冲突文件，
+  需要人工介入解决（本地或 PR 均可），解决后重新触发
+- **输入参数**：`upstream_repo`（默认 Johnny520/wcx）、`upstream_branch`（默认 master）
+- **注意**：GITHUB_TOKEN 的 push 不会触发 Build Release 工作流（GitHub 设计如此），
+  所以本工作流自带构建步骤；签名 Secret `WEKIT_KEYSTORE_BASE64` 两个工作流共用
+- **可触发 Build Release 的方式**：网页编辑/网页合并 PR / PAT push（GITHUB_TOKEN push 除外）
+
+两个工作流配合的日常用法：
+1. 上游更新了 → Actions 页跑一次 "Sync Upstream & Build APK"，直接下载 APK
+2. 只想重新出包 → 跑 "Build Release APK"（workflow_dispatch）或 push 任意提交
