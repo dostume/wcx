@@ -9,6 +9,9 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    # 允许 GITHUB_TOKEN 创建 Release 并上传 APK (默认只读会 403)
+    permissions:
+      contents: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
