@@ -293,9 +293,27 @@ object ScheduledMessageMenu : SwitchFeature(),
                 }
             }
             MessageType.FILE -> {
-                val filePath = WeMessageApi.downloadFile(msgInfo.instance) ?: return null
-                val cached = copyMediaToCache(filePath) ?: return null
-                MessageSegment(type = ScheduleMessageType.FILE, filePath = cached)
+                // 复读式创建: 仅瞬时查本地缓存, 未缓存则记引用段 (发送时现场触发下载)
+                val localPath = WeMessageApi.resolveExistingFilePath(msgInfo.instance)
+                if (localPath != null) {
+                    val cached = copyMediaToCache(localPath) ?: return null
+                    MessageSegment(type = ScheduleMessageType.FILE, filePath = cached)
+                } else {
+                    val svrId = msgInfo.serverId.takeIf { it > 0 }
+                        ?: WeMessageApi.getMsgSvrIdByMsgId(msgInfo.id)
+                    if (svrId == null && msgInfo.id <= 0) {
+                        WeLogger.w(TAG, "file has no resolvable reference (msgId=${msgInfo.id})")
+                        return null
+                    }
+                    WeLogger.i(TAG, "file recorded as reference segment (msgId=${msgInfo.id}, svrId=$svrId)")
+                    MessageSegment(
+                        type = ScheduleMessageType.FILE,
+                        filePath = "",
+                        srcTalker = msgInfo.talker,
+                        srcMsgId = msgInfo.id,
+                        srcSvrId = svrId ?: 0
+                    )
+                }
             }
             else -> null
         }

@@ -396,9 +396,14 @@ object ScheduledMessage : ClickableFeature() {
                 }
             }
             MessageType.FILE -> {
-                if (segment.filePath.isNotBlank()) {
-                    val fileName = segment.filePath.substringAfterLast('/')
-                    WeMessageApi.sendFile(talker, segment.filePath, fileName)
+                when {
+                    segment.filePath.isNotBlank() -> {
+                        val fileName = segment.filePath.substringAfterLast('/')
+                        WeMessageApi.sendFile(talker, segment.filePath, fileName)
+                    }
+                    segment.srcSvrId > 0 || segment.srcMsgId > 0 ->
+                        // 复读式引用段: 发送时现场触发文件下载 (与用户手动下载文件同机制)
+                        sendFileByReference(talker, segment.srcTalker.ifEmpty { talker }, segment)
                 }
             }
         }
@@ -475,6 +480,20 @@ object ScheduledMessage : ClickableFeature() {
             WeMessageApi.sendVideo(talker, mp4Path)
         }.onFailure {
             WeLogger.e(TAG, "repeat-path video failed (svrId=${segment.srcSvrId})", it)
+        }
+    }
+
+    private fun sendFileByReference(talker: String, srcTalker: String, segment: MessageSegment) {
+        val instance = resolveSourceInstance(srcTalker, segment.srcSvrId, segment.srcMsgId)
+        if (instance == null) {
+            WeLogger.e(TAG, "file source not found at send time (svrId=${segment.srcSvrId}, msgId=${segment.srcMsgId})")
+            return
+        }
+        runCatching {
+            val path = WeMessageApi.downloadFile(instance) ?: error("file download failed at send time")
+            WeMessageApi.sendFile(talker, path, path.substringAfterLast('/'))
+        }.onFailure {
+            WeLogger.e(TAG, "repeat-path file failed (svrId=${segment.srcSvrId})", it)
         }
     }
 
@@ -557,7 +576,8 @@ object ScheduledMessage : ClickableFeature() {
                 if (byRef) "语音: 引用原消息" else "语音: ${duration}ms"
             MessageType.VIDEO ->
                 if (byRef) "视频: 引用原消息" else "视频: ${filePath.substringAfterLast('/').take(20)}"
-            MessageType.FILE -> "文件: ${filePath.substringAfterLast('/').take(20)}"
+            MessageType.FILE ->
+                if (byRef) "文件: 引用原消息" else "文件: ${filePath.substringAfterLast('/').take(20)}"
         }
     }
 

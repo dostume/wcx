@@ -2156,6 +2156,22 @@ object WeMessageApi : ApiFeature(), IResolveDex {
      * 下载文件 (直接使用已有的 msgInfo 实例): 先确保文件已缓存到微信内部, 再拷贝到 Download/WCX/。
      * @return 拷贝到 Download/WCX/ 后的绝对路径, 失败返回 null
      */
+    /**
+     * 仅解析本地已完整缓存的文件路径 (纯查库, 不触发下载), 供创建定时任务时做瞬时检查。
+     * 文件未缓存时返回 null, 由调用方决定是否记为引用段延迟到发送时处理。
+     */
+    fun resolveExistingFilePath(msgInfoInstance: Any): String? {
+        return try {
+            val mi = MessageInfo(msgInfoInstance)
+            queryAppAttach(mi.id, mi.talker)
+                ?.takeIf { it.isComplete && !it.fileFullPath.isNullOrEmpty() }
+                ?.fileFullPath
+        } catch (e: Exception) {
+            WeLogger.e(TAG, "resolveExistingFilePath failed", e)
+            null
+        }
+    }
+
     fun downloadFile(msgInfoInstance: Any): String? {
         return try {
             val cachedPath = cacheFile(msgInfoInstance) ?: run {
