@@ -1,10 +1,15 @@
 name: Sync Upstream & Build APK
 
-# 纯云端流程: 拉取上游 Johnny520/wcx 最新代码 → 合并本仓库的定时发送等改动
-# → 构建 4 个 Release APK → 上传 Artifacts → 把合并结果推回本仓库 master
-# 全程不需要本地环境, 在 Actions 页手动触发即可
+# 每天定时检查上游 Johnny520/wcx 是否更新:
+#   有更新 -> 合并本仓库改动 -> 构建 4 个 Release APK -> 上传 Artifacts
+#          -> 发布 GitHub Release (tag: auto-<上游短SHA>) -> 合并结果推回 master
+#   无更新 -> 跳过构建 (定时触发时), 不产生任何费用
+# 手动触发 (workflow_dispatch) 时始终构建, 并可用 force_release 强制发布 Release
 
 on:
+  schedule:
+    # UTC 01:00 = 北京时间 09:00, 每天一次
+    - cron: '0 1 * * *'
   workflow_dispatch:
     inputs:
       upstream_repo:
@@ -15,6 +20,10 @@ on:
         description: '上游分支'
         default: 'master'
         required: false
+      force_release:
+        description: '无上游更新时也强制构建并发布 Release'
+        type: boolean
+        default: false
 
 jobs:
   sync-and-build:
@@ -38,6 +47,10 @@ jobs:
           git remote add upstream "https://github.com/${{ github.event.inputs.upstream_repo || 'Johnny520/wcx' }}.git"
           git fetch upstream "${{ github.event.inputs.upstream_branch || 'master' }}"
 
+      - name: Record upstream commit
+        id: upstream
+        run: echo "sha=$(git rev-parse --short "upstream/${{ github.event.inputs.upstream_branch || 'master' }}")" >> "$GITHUB_OUTPUT"
+
       - name: Merge upstream changes
         id: merge
         run: |
@@ -60,34 +73,57 @@ jobs:
           fi
 
       - name: Push merge result back to master
-        # GITHUB_TOKEN 的 push 不会再触发 Build Release 工作流 (GitHub 设计如此),
-        # 但本工作流自身已包含构建步骤, 不受影响
+        # GITHUB_TOKEN 的 push 不会再次触发本工作流 (GitHub 设计如此), 无循环风险
         if: steps.merge.outputs.changed == 'true'
         run: git push origin HEAD:master
 
       - name: Set up JDK 21
+        # 定时触发且上游无更新时跳过全部构建步骤, 节省 Actions 配额;
+        # 手动触发始终构建
+        if: steps.merge.outputs.changed == 'true' || github.event_name != 'schedule' || inputs.force_release == true
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '21'
 
       - name: Set up Gradle
+        if: steps.merge.outputs.changed == 'true' || github.event_name != 'schedule' || inputs.force_release == true
         uses: gradle/actions/setup-gradle@v4
 
       - name: Restore release keystore (optional)
         env:
           WEKIT_KEYSTORE_BASE64: ${{ secrets.WEKIT_KEYSTORE_BASE64 }}
-        if: env.WEKIT_KEYSTORE_BASE64 != ''
+        if: env.WEKIT_KEYSTORE_BASE64 != '' && (steps.merge.outputs.changed == 'true' || github.event_name != 'schedule' || inputs.force_release == true)
         run: echo "$WEKIT_KEYSTORE_BASE64" | base64 -d > "$HOME/wcx-keystore.jks"
 
       - name: Build release APKs
+        if: steps.merge.outputs.changed == 'true' || github.event_name != 'schedule' || inputs.force_release == true
         run: |
           ./gradlew --no-daemon assembleRelease \
             -x lintVitalStandardRelease -x lintVitalLegacyRelease
 
       - name: Upload APK artifacts
+        if: steps.merge.outputs.changed == 'true' || github.event_name != 'schedule' || inputs.force_release == true
         uses: actions/upload-artifact@v4
         with:
           name: wcx-apks-${{ github.run_id }}
           path: app/build/outputs/apk/*/release/*.apk
           if-no-files-found: error
+
+      - name: Publish APKs to Release
+        # 上游有更新 (或手动强制) 时发布 Release, tag 用上游短 SHA;
+        # 同一上游版本重复发布会更新既有 Release, 不会堆积重复项
+        if: steps.merge.outputs.changed == 'true' || inputs.force_release == true
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: auto-${{ steps.upstream.outputs.sha }}
+          name: Auto Sync ${{ steps.upstream.outputs.sha }}
+          body: |
+            自动同步上游 Johnny520/wcx @ ${{ steps.upstream.outputs.sha }} 后构建。
+
+            包含本仓库全部改动 (定时发送 777026 / 取消定时发送 777027 等)。
+
+            附件 4 个 APK: standard/legacy × arm64-v8a/armeabi-v7a,
+            正式签名, 可直接覆盖安装。推荐 app-standard-arm64-v8a-release.apk。
+          files: app/build/outputs/apk/*/release/*.apk
+          fail_on_unmatched_files: true
