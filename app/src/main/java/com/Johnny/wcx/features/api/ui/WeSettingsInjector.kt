@@ -152,6 +152,8 @@ object WeSettingsInjector : ApiFeature(), IResolveDex, WeChatInputBarApi.IInputB
 
     private const val TAG = "WeSettingsInjector"
 
+    private val mainHandler = Handler(Looper.getMainLooper())
+
     private const val PREFS_KEY = "wekit_settings_entry"
     private const val PREFS_TITLE = "${BuildConfig.TAG} 设置"
     private const val PREFERENCE_CLASS_NAME = "com.tencent.mm.ui.base.preference.Preference"
@@ -411,12 +413,15 @@ object WeSettingsInjector : ApiFeature(), IResolveDex, WeChatInputBarApi.IInputB
                 .hookBefore {
                     try {
                         val activity = thisObject as Activity
-                        val intent = activity.intent ?: return@hookBefore
-                        intent.getStringExtra(BuildConfig.TAG) ?: return@hookBefore
-                        // wait for resources & theme to init
-                        Handler(Looper.getMainLooper()).postDelayed({
-                            openSettingsDialog(activity)
-                        }, 500)
+                        // onCreate 冷启动: 优先读本次传入的 intent (activity.intent 此刻
+                        // 尚未被系统赋值为该 intent)
+                        val intent = args.getOrNull(0) as? Intent
+                            ?: activity.intent ?: return@hookBefore
+                        if (intent.getStringExtra(BuildConfig.TAG).isNullOrBlank()) {
+                            return@hookBefore
+                        }
+                        consumeOpenSettingsIntent(intent)
+                        requestOpenModuleSettings(activity)
                     } catch (e: Throwable) {
                         WeLogger.e(TAG, "hookLauncherUi onCreate 异常", e)
                     }
@@ -426,18 +431,75 @@ object WeSettingsInjector : ApiFeature(), IResolveDex, WeChatInputBarApi.IInputB
                 .hookBefore {
                     try {
                         val activity = thisObject as Activity
-                        val intent = activity.intent ?: return@hookBefore
-                        intent.getStringExtra(BuildConfig.TAG) ?: return@hookBefore
-                        openSettingsDialog(activity)
+                        // 关键修复: 读本次传入的 intent 参数而不是 activity.intent。
+                        // LauncherUI 常驻时主界面再点「打开模块设置」会走 onNewIntent,
+                        // 而 activity.intent 要等 onNewIntent 返回后才被系统更新成带 extra
+                        // 的新 intent —— 读旧 intent 会直接 return, 表现为要点很多次才生效。
+                        val intent = args.getOrNull(0) as? Intent ?: return@hookBefore
+                        if (intent.getStringExtra(BuildConfig.TAG).isNullOrBlank()) {
+                            return@hookBefore
+                        }
+                        consumeOpenSettingsIntent(intent)
+                        requestOpenModuleSettings(activity)
                     } catch (e: Throwable) {
                         WeLogger.e(TAG, "hookLauncherUi onNewIntent 异常", e)
+                    }
+                }
+
+            // 兜底: 排队等待打开期间用户把微信切到前台 → 立即尝试弹出,
+            // 避免「切回微信界面时才跳出来」的滞后感
+            firstMethod { name = "onResume" }
+                .hookBefore {
+                    try {
+                        val activity = thisObject as Activity
+                        if (pendingOpenActivity === activity) {
+                            mainHandler.removeCallbacks(openSettingsRunnable)
+                            openAttempts = 0
+                            mainHandler.post(openSettingsRunnable)
+                        }
+                    } catch (e: Throwable) {
+                        WeLogger.e(TAG, "hookLauncherUi onResume 异常", e)
                     }
                 }
         }
     }
 
+    /** 消费掉 intent 里的标记, 避免 Activity 重建 / 后台切回时带着旧 extra 再次弹窗。 */
+    private fun consumeOpenSettingsIntent(intent: Intent) {
+        runCatching { intent.removeExtra(BuildConfig.TAG) }
+    }
+
+    // 打开模块设置的去抖队列: 同一 LauncherUI 上多次请求合并, 失败自动重试直至成功
+    private var pendingOpenActivity: Activity? = null
+    private var openAttempts = 0
+    private val openSettingsRunnable = object : Runnable {
+        override fun run() {
+            val activity = pendingOpenActivity ?: return
+            if (activity.isFinishing || activity.isDestroyed) {
+                pendingOpenActivity = null
+                return
+            }
+            if (openSettingsDialog(activity)) {
+                pendingOpenActivity = null
+            } else if (openAttempts++ < 6) {
+                mainHandler.postDelayed(this, 500)
+            } else {
+                pendingOpenActivity = null
+            }
+        }
+    }
+
+    private fun requestOpenModuleSettings(activity: Activity) {
+        if (pendingOpenActivity === activity) return
+        pendingOpenActivity = activity
+        openAttempts = 0
+        mainHandler.removeCallbacks(openSettingsRunnable)
+        // 冷启动等微信把主界面渲染出来; onResume 兜底会提前尝试
+        mainHandler.postDelayed(openSettingsRunnable, 600)
+    }
+
     @Suppress("NOTHING_TO_INLINE")
-    fun openSettingsDialog(context: Context) {
+    fun openSettingsDialog(context: Context): Boolean {
         // Bug Fix (v201): 对齐上游 WeKit 的最简 Intent 启动方式。
         // 配合 WeLauncher.init() 中 ActivityProxy.init() 注入的 IActivityManager /
         // Instrumentation / Handler.Callback 钩子，模块 Activity 会被代理到
@@ -448,8 +510,10 @@ object WeSettingsInjector : ApiFeature(), IResolveDex, WeChatInputBarApi.IInputB
         // 已声明 exported="true"，因此经代理路由后能正常拉起。
         try {
             context.startActivity(Intent(context, SettingsActivity::class.java))
+            return true
         } catch (e: Throwable) {
             WeLogger.e(TAG, "openSettingsDialog 启动失败", e)
+            return false
         }
     }
 
