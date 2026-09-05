@@ -289,6 +289,15 @@ object CustomNotificationRingtone : ClickableFeature(), IResolveDex {
         }.getOrNull() ?: "WCX 自定义铃声"
     }
 
+    /** 解析铃声 URI 的可读标题；必须带 application context（null 会抛异常被吞而显示"未选择"）。 */
+    fun ringtoneTitle(soundUri: String): String? {
+        if (soundUri.isBlank()) return null
+        val ctx = HostInfo.application
+        return runCatching {
+            RingtoneManager.getRingtone(ctx, Uri.parse(soundUri))?.getTitle(ctx)
+        }.getOrNull()?.takeIf { it.isNotBlank() }
+    }
+
     // ─── 设置界面 ─────────────────────────────────────────────────────────────
 
     override fun onClick(context: ComponentActivity) {
@@ -481,11 +490,12 @@ private fun ruleSummaryBody(rule: CustomNotificationRingtone.RingtoneRule): Stri
     if (rule.mode == CustomNotificationRingtone.RuleMode.SILENT) {
         append("静音")
     } else {
-        val title = rule.soundUri.takeIf { it.isNotBlank() }?.let { uri ->
-            runCatching { RingtoneManager.getRingtone(null, Uri.parse(uri))?.getTitle(null) }
-                .getOrNull()
+        val uri = rule.soundUri
+        val title = if (uri.isBlank()) null else {
+            CustomNotificationRingtone.ringtoneTitle(uri)
+                ?: runCatching { Uri.parse(uri).lastPathSegment }.getOrNull()?.takeIf { it.isNotBlank() }
         }
-        append(title ?: "未选择铃声")
+        append("铃声：${title ?: "未选择铃声"}")
     }
 }
 
@@ -641,9 +651,9 @@ private fun RuleEditorDialog(
                     ) {
                         Column(Modifier.weight(1f)) {
                             val currentTitle = cur.soundUri.takeIf { it.isNotBlank() }?.let { uri ->
-                                runCatching {
-                                    RingtoneManager.getRingtone(null, Uri.parse(uri))?.getTitle(null)
-                                }.getOrNull()
+                                CustomNotificationRingtone.ringtoneTitle(uri)
+                                    ?: runCatching { Uri.parse(uri).lastPathSegment }
+                                        .getOrNull()?.takeIf { it.isNotBlank() }
                             }
                             Text(
                                 "当前铃声：${currentTitle ?: "未选择"}",
