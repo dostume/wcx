@@ -1,5 +1,6 @@
 package com.Johnny.wcx.features.items.batch
 
+import android.app.Activity
 import android.content.Context
 import androidx.activity.ComponentActivity
 import androidx.compose.foundation.clickable
@@ -18,6 +19,7 @@ import androidx.compose.ui.Modifier
 import com.Johnny.wcx.features.api.core.WeDatabaseApi
 import com.Johnny.wcx.features.api.core.WeMessageApi
 import com.Johnny.wcx.features.api.core.models.IWeContact
+import com.Johnny.wcx.features.api.ui.WeNativePickerBridge
 import com.Johnny.wcx.features.core.ClickableFeature
 import com.Johnny.wcx.features.core.Feature
 import com.Johnny.wcx.ui.content.AlertDialogContent
@@ -126,6 +128,25 @@ object MassSendMessage : ClickableFeature() {
         mode: SendMode,
         text: String
     ) {
+        // 优先唤起微信原版多选页; 页面不可用时降级自绘选择器
+        val activity = context as? Activity
+        val launched = activity != null && WeNativePickerBridge.launch(
+            activity = activity,
+            options = WeNativePickerBridge.Options(
+                title = "选择群发对象",
+                multiSelect = true,
+                allowOfficialAccounts = false,
+            ),
+            onResult = { wxIds ->
+                if (wxIds.isEmpty()) {
+                    WeNativePickerBridge.toastEmptySelection()
+                    return@launch
+                }
+                sendToAll(wxIds.toSet(), mode, text)
+            }
+        )
+        if (launched) return
+
         showComposeDialog(context) {
             ContactsSelector(
                 title = "选择群发对象",
