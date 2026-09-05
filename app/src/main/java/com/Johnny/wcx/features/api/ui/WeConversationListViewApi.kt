@@ -116,18 +116,20 @@ object WeConversationListViewApi : ApiFeature(), IResolveDex {
     private fun hookBinding(method: DexMethodDelegate) {
         if (method.isPlaceholder) return
         method.hookAfter {
-            val row = result as View
-            val adapter = thisObject as BaseAdapter
-            val position = args[0] as Int
-            val conversation = adapter.getItem(position)!!
+            // 防御：个别微信版本 DexKit 会匹配到非 getView 的方法（如 LauncherUI 内部
+            // 方法返回 Activity），直接跳过而不是抛 ClassCastException 刷屏日志。
+            val row = result as? View ?: return@hookAfter
+            val adapter = thisObject as? BaseAdapter ?: return@hookAfter
+            val position = args.getOrNull(0) as? Int ?: return@hookAfter
+            val conversation = runCatching { adapter.getItem(position) }.getOrNull() ?: return@hookAfter
             val bindContext = BindContext(
                 position = position,
                 itemCount = adapter.count,
-                previousConversation = if (position > 0) adapter.getItem(position - 1) else null,
-                nextConversation = if (position + 1 < adapter.count) adapter.getItem(position + 1) else null,
+                previousConversation = if (position > 0) runCatching { adapter.getItem(position - 1) }.getOrNull() else null,
+                nextConversation = if (position + 1 < adapter.count) runCatching { adapter.getItem(position + 1) }.getOrNull() else null,
             )
             if (latestAdapter?.get() !== adapter) latestAdapter = WeakReference(adapter)
-            (args[2] as? ListView)?.let { listView ->
+            (args.getOrNull(2) as? ListView)?.let { listView ->
                 if (latestListView?.get() !== listView) latestListView = WeakReference(listView)
             }
 

@@ -2,6 +2,7 @@ package com.Johnny.wcx.features.api.ui
 
 import android.app.Activity
 import android.content.Intent
+import android.os.Bundle
 import com.Johnny.wcx.BuildConfig
 import com.Johnny.wcx.constants.PackageNames
 import com.Johnny.wcx.preferences.WePrefs
@@ -10,6 +11,7 @@ import com.Johnny.wcx.utils.android.showToast
 import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.XposedBridge
 import dev.ujhhgtg.reflekt.utils.toClassOrNull
+import org.json.JSONArray
 import org.json.JSONObject
 
 /**
@@ -84,15 +86,24 @@ object WeNativePickerBridge {
         options: Options,
         onResult: (List<String>) -> Unit,
     ): Boolean {
-        val pickerClass = PICKER_CLASSES.firstOrNull { it.toClassOrNull() != null } ?: return false
-        ensureHooks()
-
-        // 关键：只有学习到微信真实打开参数后才尝试原生页，否则直接降级自绘
-        val template = WePrefs.getString(PREFS_TEMPLATE_PREFIX + pickerClass)
-        if (template.isNullOrBlank()) {
-            WeLogger.i(TAG, "no native template for $pickerClass yet, fallback to custom picker")
+        val available = PICKER_CLASSES.filter { it.toClassOrNull() != null }
+        if (available.isEmpty()) {
+            diagOnce("no_picker_class") { "none of $PICKER_CLASSES exist in this wechat build" }
             return false
         }
+        ensureHooks()
+
+        // 关键：哪个候选页已学习到微信真实参数就用哪个（各页模板独立学习）；
+        // 一个都没有才降级自绘，避免"学了转发页却仍因选人页无模板而降级"。
+        val pickerClass = available.firstOrNull { c ->
+            !WePrefs.getString(PREFS_TEMPLATE_PREFIX + c).isNullOrBlank()
+        }
+        if (pickerClass == null) {
+            WeLogger.i(TAG, "no native template learned yet (available: $available), fallback to custom picker")
+            hintLearnOnce()
+            return false
+        }
+        val template = WePrefs.getString(PREFS_TEMPLATE_PREFIX + pickerClass)!!
 
         return try {
             val intent = Intent().apply {
@@ -101,7 +112,7 @@ object WeNativePickerBridge {
                 putExtra("max_limit_num", 9999)
                 putExtra(MARKER, true)
                 if (options.title.isNotEmpty()) putExtra("Select_Conv_User_Title", options.title)
-                // 重放微信真实场景参数（仅基本类型；控制项在 TEMPLATE_IGNORE 内由上面覆盖）
+                // 重放微信真实场景参数（控制项在 TEMPLATE_IGNORE 内由上面覆盖）
                 replayTemplateExtras(this, template)
             }
             pending = PendingRequest(options, onResult)
@@ -112,6 +123,25 @@ object WeNativePickerBridge {
             WeLogger.e(TAG, "launch native picker failed", e)
             pending = null
             false
+        }
+    }
+
+    private val diagLogged = java.util.Collections.synchronizedSet(java.util.HashSet<String>())
+
+    private fun diagOnce(key: String, message: () -> String) {
+        if (diagLogged.size > 256) diagLogged.clear()
+        if (diagLogged.add(key)) WeLogger.w(TAG, message())
+    }
+
+    /** 降级自绘时提示一次如何启用原生多选（引导用户在微信走一次选人界面完成"模板学习"）。 */
+    @Volatile
+    private var hintShown = false
+
+    private fun hintLearnOnce() {
+        if (hintShown) return
+        hintShown = true
+        runCatching {
+            showToast("想用微信原生多选？请先在微信里使用一次「选联系人」界面（转发消息选人 / 发起群聊选人均可），本功能将自动改用原生页面（本次已用内置选择器）")
         }
     }
 
@@ -151,35 +181,96 @@ object WeNativePickerBridge {
         }
     }
 
-    /** 微信真实打开选择页时把基本类型场景参数快照成模板。 */
+    /** 微信真实打开选择页时把场景参数快照成模板。
+     *  微信场景参数多数是 Bundle / ArrayList 等复合类型（此前只收基本类型导致模板永远为空），
+     *  这里做类型标注递归编码，可安全回放的类型都收（Parcelable 大对象除外）。 */
     private fun learnTemplate(className: String, intent: Intent) {
-        val extras = intent.extras ?: return
+        val extras = intent.extras ?: run { diagOnce("learn_no_extras") { "wechat opened $className without extras" }; return }
         if (extras.keySet().isEmpty()) return
-        val obj = JSONObject()
+        val out = JSONObject()
+        var ignored = 0
         for (key in extras.keySet()) {
             if (TEMPLATE_IGNORE.contains(key)) continue
             val value = try {
                 extras.get(key)
             } catch (e: Throwable) {
+                ignored++
                 continue
             }
-            // 只记录可安全重放的基本类型，忽略 Parcelable（大对象/不可复用）
-            val simple = when (value) {
-                is String -> value
-                is Int -> value
-                is Long -> value
-                is Boolean -> value
-                is Double -> value
-                is Float -> value
-                else -> continue
+            val encoded = encodeValue(value, 0)
+            if (encoded == null) {
+                ignored++
+                continue
             }
-            runCatching { obj.put(key, simple) }
+            runCatching { out.put(key, encoded) }
         }
-        if (obj.length() == 0) return
+        if (out.length() == 0) {
+            WeLogger.w(TAG, "learn $className: nothing learnable (${extras.keySet().size} keys, $ignored unencodable)")
+            return
+        }
+        val json = out.toString()
+        if (json.length > MAX_TEMPLATE_LEN) {
+            WeLogger.w(TAG, "learn $className: template too large (${json.length} chars), skipped")
+            return
+        }
         val stored = WePrefs.getStringOrDef(PREFS_TEMPLATE_PREFIX + className, null)
-        if (stored == obj.toString()) return // 模板没变化
-        WePrefs.putString(PREFS_TEMPLATE_PREFIX + className, obj.toString())
-        WeLogger.i(TAG, "learned native picker template for $className: ${obj.length()} keys")
+        if (stored == json) return // 模板没变化
+        WePrefs.putString(PREFS_TEMPLATE_PREFIX + className, json)
+        WeLogger.i(TAG, "learned native picker template for $className: ${out.length()} keys, ${json.length} chars")
+    }
+
+    private const val MAX_TEMPLATE_LEN = 8192
+
+    /** 把 extras 值编码成带类型标注的 JSON（深度受限，防递归失控）。 */
+    private fun encodeValue(value: Any?, depth: Int): JSONObject? {
+        if (depth > 5 || value == null) return null
+        val o = JSONObject()
+        when (value) {
+            is String -> { o.put("t", "s"); o.put("v", value) }
+            is Int -> { o.put("t", "i"); o.put("v", value) }
+            is Long -> { o.put("t", "l"); o.put("v", value) }
+            is Boolean -> { o.put("t", "b"); o.put("v", value) }
+            is Double -> { o.put("t", "d"); o.put("v", value) }
+            is Float -> { o.put("t", "f"); o.put("v", value.toDouble()) }
+            is Bundle -> {
+                if (value.keySet().isEmpty()) return null
+                val inner = JSONObject()
+                var count = 0
+                for (k in value.keySet()) {
+                    val ev = encodeValue(runCatching { value.get(k) }.getOrNull(), depth + 1) ?: continue
+                    runCatching { inner.put(k, ev) }
+                    count++
+                }
+                if (count == 0) return null
+                o.put("t", "bundle"); o.put("v", inner)
+            }
+            is ArrayList<*> -> {
+                if (value.isEmpty() || value.size > 128) return null
+                val elemType = value.firstOrNull() ?: return null
+                val uniform = value.all { it != null && it::class == elemType::class }
+                if (!uniform) return null
+                when (elemType) {
+                    is String -> {
+                        val arr = JSONArray()
+                        value.forEach { arr.put(it as String) }
+                        o.put("t", "al_s"); o.put("v", arr)
+                    }
+                    is Int -> {
+                        val arr = JSONArray()
+                        value.forEach { arr.put(it as Int) }
+                        o.put("t", "al_i"); o.put("v", arr)
+                    }
+                    is Long -> {
+                        val arr = JSONArray()
+                        value.forEach { arr.put(it as Long) }
+                        o.put("t", "al_l"); o.put("v", arr)
+                    }
+                    else -> return null
+                }
+            }
+            else -> return null
+        }
+        return o
     }
 
     private fun replayTemplateExtras(intent: Intent, templateJson: String) {
@@ -187,28 +278,126 @@ object WeNativePickerBridge {
             val obj = JSONObject(templateJson)
             for (key in obj.keys()) {
                 if (TEMPLATE_IGNORE.contains(key)) continue
-                val v = obj.opt(key)
-                when (v) {
-                    is String -> intent.putExtra(key, v)
-                    is Int -> intent.putExtra(key, v)
-                    is Long -> intent.putExtra(key, v)
-                    is Boolean -> intent.putExtra(key, v)
-                    is Double -> intent.putExtra(key, v)
-                    is Float -> intent.putExtra(key, v)
-                    else -> Unit
-                }
+                val encoded = obj.optJSONObject(key) ?: continue
+                replayValue(intent, key, encoded, 0)
             }
         }.onFailure { WeLogger.e(TAG, "replay template failed", it) }
     }
 
+    private fun replayValue(intent: Intent, key: String, o: JSONObject, depth: Int) {
+        if (depth > 5) return
+        runCatching {
+            when (o.optString("t")) {
+                "s" -> intent.putExtra(key, o.optString("v"))
+                "i" -> intent.putExtra(key, o.optInt("v"))
+                "l" -> intent.putExtra(key, o.optLong("v"))
+                "b" -> intent.putExtra(key, o.optBoolean("v"))
+                "d" -> intent.putExtra(key, o.optDouble("v"))
+                "f" -> intent.putExtra(key, o.optDouble("v").toFloat())
+                "al_s" -> {
+                    val arr = o.optJSONArray("v") ?: return@runCatching
+                    val list = ArrayList<String>()
+                    for (i in 0 until arr.length()) list.add(arr.optString(i))
+                    if (list.isNotEmpty()) intent.putStringArrayListExtra(key, list)
+                }
+                "al_i" -> {
+                    val arr = o.optJSONArray("v") ?: return@runCatching
+                    val list = ArrayList<Int>()
+                    for (i in 0 until arr.length()) list.add(arr.optInt(i))
+                    if (list.isNotEmpty()) intent.putIntegerArrayListExtra(key, list)
+                }
+                "al_l" -> {
+                    val arr = o.optJSONArray("v") ?: return@runCatching
+                    val list = ArrayList<Long>()
+                    for (i in 0 until arr.length()) list.add(arr.optLong(i))
+                    if (list.isNotEmpty()) intent.putExtra(key, list)
+                }
+                "bundle" -> {
+                    val inner = o.optJSONObject("v") ?: return@runCatching
+                    val bundle = Bundle()
+                    for (k in inner.keys()) {
+                        val child = inner.optJSONObject(k) ?: continue
+                        replayBundleValue(bundle, k, child, depth + 1)
+                    }
+                    if (!bundle.isEmpty) intent.putExtra(key, bundle)
+                }
+                else -> Unit
+            }
+        }.onFailure { WeLogger.e(TAG, "replay key $key failed", it) }
+    }
+
+    private fun replayBundleValue(bundle: Bundle, key: String, o: JSONObject, depth: Int) {
+        if (depth > 5) return
+        runCatching {
+            when (o.optString("t")) {
+                "s" -> bundle.putString(key, o.optString("v"))
+                "i" -> bundle.putInt(key, o.optInt("v"))
+                "l" -> bundle.putLong(key, o.optLong("v"))
+                "b" -> bundle.putBoolean(key, o.optBoolean("v"))
+                "d" -> bundle.putDouble(key, o.optDouble("v"))
+                "f" -> bundle.putFloat(key, o.optDouble("v").toFloat())
+                "al_s" -> {
+                    val arr = o.optJSONArray("v") ?: return@runCatching
+                    val list = ArrayList<String>()
+                    for (i in 0 until arr.length()) list.add(arr.optString(i))
+                    if (list.isNotEmpty()) bundle.putStringArrayList(key, list)
+                }
+                "al_i" -> {
+                    val arr = o.optJSONArray("v") ?: return@runCatching
+                    val list = ArrayList<Int>()
+                    for (i in 0 until arr.length()) list.add(arr.optInt(i))
+                    if (list.isNotEmpty()) bundle.putIntegerArrayList(key, list)
+                }
+                "bundle" -> {
+                    val inner = o.optJSONObject("v") ?: return@runCatching
+                    val child = Bundle()
+                    for (k in inner.keys()) {
+                        val grand = inner.optJSONObject(k) ?: continue
+                        replayBundleValue(child, k, grand, depth + 1)
+                    }
+                    if (!child.isEmpty) bundle.putBundle(key, child)
+                }
+                else -> Unit
+            }
+        }.onFailure { WeLogger.e(TAG, "replay bundle key $key failed", it) }
+    }
+
     private fun deliverIfPending(activity: Activity) {
         val request = pending ?: return
-        val intent = activity.intent ?: return
-        val ids = extractResultIds(intent)
+        val ids = extractResultIds(activity)
         if (ids == null) {
-            // 未命中结果 key：可能是取消返回，也可能是未知结果形态（打印 extras 便于适配）。
-            if (intent.extras != null) {
-                WeLogger.i(TAG, "picker finish without known result: ${intent.extras!!.keySet()}")
+            // 明确取消（resultCode=CANCELED 且无数据）：清掉 pending，避免残留在下次误投。
+            if (isCancelled(activity)) {
+                pending = null
+                WeLogger.i(TAG, "picker cancelled, cleared pending request")
+                return
+            }
+            // 未命中结果 key：逐个打印 key+值类型便于适配。
+            val extras = activity.intent?.extras
+            if (extras != null) {
+                val desc = buildString {
+                    for (key in extras.keySet()) {
+                        val v = runCatching { extras.get(key) }.getOrNull()
+                        append(key)
+                        append("=")
+                        append(v?.javaClass?.simpleName ?: "null")
+                        append("; ")
+                    }
+                }
+                WeLogger.i(TAG, "picker finish without known result; intent extras: $desc")
+            }
+            val resultData = readActivityResultData(activity)
+            if (resultData?.extras != null) {
+                val desc = buildString {
+                    for (key in resultData.extras!!.keySet()) {
+                        val v = runCatching { resultData.extras!!.get(key) }.getOrNull()
+                        append(key)
+                        append("=")
+                        append(v?.javaClass?.simpleName ?: "null")
+                        append("; ")
+                    }
+                }
+                WeLogger.i(TAG, "picker finish without known result; resultData extras: $desc")
             }
             return
         }
@@ -218,16 +407,39 @@ object WeNativePickerBridge {
         request.onResult(filtered)
     }
 
-    private fun extractResultIds(intent: Intent): List<String>? {
-        for (key in RESULT_KEYS) {
-            runCatching {
-                val list = intent.getStringArrayListExtra(key)
-                if (list != null && list.isNotEmpty()) return list
+    /** 微信把选中结果 setResult() 出去（转发/选人流程标准做法），数据存在 Activity 的
+     *  mResultData/mResultCode 私有字段而非 getIntent() 里。finish 后系统才做结果派发，
+     *  因此在 finish hook 中反射读取这两个字段拿回结果（对 startActivity 无请求码启动同样有效）。 */
+    private fun readActivityResultData(activity: Activity): Intent? = runCatching {
+        val f = Activity::class.java.getDeclaredField("mResultData")
+        f.isAccessible = true
+        f.get(activity) as? Intent
+    }.getOrNull()
+
+    private fun isCancelled(activity: Activity): Boolean = runCatching {
+        val f = Activity::class.java.getDeclaredField("mResultCode")
+        f.isAccessible = true
+        (f.get(activity) as? Int) == Activity.RESULT_CANCELED
+    }.getOrDefault(false)
+
+    private fun extractResultIds(activity: Activity): List<String>? {
+        // 微信结果可能在页面自身 intent，也可能在 setResult 的 data 里，两处都探测
+        val candidates = ArrayList<Intent>(2)
+        activity.intent?.let { candidates.add(it) }
+        readActivityResultData(activity)?.let { candidates.add(it) }
+        for (intent in candidates) {
+            for (key in RESULT_KEYS) {
+                runCatching {
+                    val list = intent.getStringArrayListExtra(key)
+                    if (list != null && list.isNotEmpty()) return list
+                }
             }
         }
-        for (key in RESULT_KEYS) {
-            val single = intent.getStringExtra(key)
-            if (!single.isNullOrBlank()) return listOf(single)
+        for (intent in candidates) {
+            for (key in RESULT_KEYS) {
+                val single = intent.getStringExtra(key)
+                if (!single.isNullOrBlank()) return listOf(single)
+            }
         }
         return null
     }
