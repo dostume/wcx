@@ -224,20 +224,15 @@ object CustomNotificationRingtone : ClickableFeature(), IResolveDex {
                         }
                         currentPendingRule.set(rule)
                         when (rule.mode) {
-                            RuleMode.SILENT -> builder.setSound(null, null)
+                            RuleMode.SILENT -> builder.setSound(null)
                             RuleMode.RINGTONE -> {
                                 if (rule.soundUri.isNotBlank()) {
-                                    val uri = Uri.parse(rule.soundUri)
-                                    val attrs = AudioAttributes.Builder()
-                                        .setUsage(AudioAttributes.USAGE_NOTIFICATION)
-                                        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                                        .build()
-                                    builder.setSound(uri, attrs)
+                                    builder.setSound(Uri.parse(rule.soundUri))
                                 }
                             }
                         }
-                        builder.setFlag(Notification.FLAG_ONLY_ALERT_ONCE, true)
-                        WeLogger.i(TAG, "Builder.setSound + setFlag set for $convWxId (${rule.mode})")
+                        builder.setOnlyAlertOnce(true)
+                        WeLogger.i(TAG, "Builder.setSound + setOnlyAlertOnce set for $convWxId (${rule.mode})")
                     } catch (e: Throwable) {
                         WeLogger.e(TAG, "apply ringtone override failed", e)
                     }
@@ -289,7 +284,6 @@ object CustomNotificationRingtone : ClickableFeature(), IResolveDex {
         val ch = NotificationChannel(
             SILENT_CHANNEL, "WCX 静音通知", NotificationManager.IMPORTANCE_LOW
         ).apply {
-            setSound(null, null)
             enableVibration(false)
             vibrationPattern = longArrayOf()
         }
