@@ -49,7 +49,6 @@ import com.Johnny.wcx.features.api.core.WeConversationApi
 import com.Johnny.wcx.features.api.core.WeDatabaseApi
 import com.Johnny.wcx.features.api.core.WeDatabaseListenerApi
 import com.Johnny.wcx.features.api.core.models.IWeContact
-import com.Johnny.wcx.features.api.ui.WeNativePickerBridge
 import com.Johnny.wcx.features.api.ui.WeStartActivityApi
 import com.Johnny.wcx.features.core.ClickableFeature
 import com.Johnny.wcx.features.core.Feature
@@ -1516,37 +1515,19 @@ object ConversationAggregation : ClickableFeature(),
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
-                                val context = LocalContext.current as? Activity ?: return@Row
+                                val context = LocalContext.current
                                 Button(
                                     modifier = Modifier.weight(1f),
                                     onClick = {
-                                        // 优先唤起微信原版多选页; 不可用时降级自绘选择器
-                                        val launched = WeNativePickerBridge.launch(
-                                            activity = context,
-                                            options = WeNativePickerBridge.Options(
-                                                title = "选择对话",
-                                                multiSelect = true,
-                                            ),
-                                            onResult = { wxIds ->
-                                                if (wxIds.isEmpty()) {
-                                                    WeNativePickerBridge.toastEmptySelection()
-                                                    return@launch
-                                                }
-                                                members = wxIds
-                                                this.onDismiss()
-                                            }
-                                        )
-                                        if (launched) return@onClick
-
                                         showComposeDialog(context) {
                                             ContactsSelector(
                                                 title = "选择对话",
                                                 contacts = remember { WeDatabaseApi.getContacts() },
                                                 initialSelectedWxIds = members,
-                                                onDismiss = this.onDismiss,
+                                                onDismiss = onDismiss,
                                                 onConfirm = {
                                                     members = it
-                                                    this.onDismiss()
+                                                    onDismiss()
                                                 }
                                             )
                                         }

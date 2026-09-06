@@ -2,6 +2,7 @@ package com.Johnny.wcx.features.items.chat_input_bar_menu
 
 import com.Johnny.wcx.R
 
+import android.app.Activity
 import android.content.Context
 import androidx.compose.material3.Text
 import androidx.compose.runtime.getValue
@@ -26,7 +27,6 @@ import com.Johnny.wcx.features.api.net.models.protobuf.UserNameProto
 import com.Johnny.wcx.features.api.net.models.protobuf.WeProto
 import com.Johnny.wcx.features.api.ui.WeChatInputBarMenuApi
 import com.Johnny.wcx.features.api.ui.WeCurrentConversationApi
-import com.Johnny.wcx.features.api.ui.WeNativePickerBridge
 import com.Johnny.wcx.features.core.Feature
 
 import com.Johnny.wcx.features.core.SwitchFeature
@@ -161,27 +161,7 @@ object MentionMembers : SwitchFeature(), IResolveDex {
 
                     showComposeDialog(context) {
                         val dialogContext = LocalContext.current
-                        val localizedContext = LocalContext.current as? Activity ?: return@showComposeDialog
-
-                        // 优先唤起微信原版多选页(群成员); 不可用时降级自绘选择器
-                        val launched = WeNativePickerBridge.launch(
-                            activity = dialogContext,
-                            options = WeNativePickerBridge.Options(
-                                title = "@所有人",
-                                multiSelect = true,
-                                allowChatrooms = false,
-                                allowFriends = false,
-                            ),
-                            onResult = { wxIds ->
-                                if (wxIds.isEmpty()) {
-                                    WeNativePickerBridge.toastEmptySelection()
-                                    return@launch
-                                }
-                                processSelectedMembers(wxIds, allMembers, currentConv, chatFooter, context)
-                            }
-                        )
-                        if (launched) return
-
+                        val localizedContext = LocalContext.current
                         ContactsSelector(
                             title = "@所有人",
                             contacts = allMembers,
@@ -197,7 +177,69 @@ object MentionMembers : SwitchFeature(), IResolveDex {
                                 }
 
                                 onDismiss()
-                                processSelectedMembers(selectedWxIds, allMembers, currentConv, chatFooter, context)
+
+                                val selectedContacts = allMembers.filter { it.wxId in selectedWxIds }
+
+                                if (stealthMentionAll) {
+                                    // 原生发送输入框原文 (不加 @ 昵称前缀), atuserlist
+                                    // 由入库钩子注入 msgsource
+                                    val atUserList = selectedContacts
+                                        .map { it.wxId }
+                                        .filter { it != "weixin" && it != "filehelper" }
+                                        .take(MAX_AT_USERS)
+                                        .joinToString(",")
+                                    pendingStealthAt = currentConv to atUserList
+                                    WeChatInputBarMenuApi.performSend(chatFooter)
+                                    return@ContactsSelector
+                                }
+
+                                val content = chatFooter.lastText
+                                val atNicknames = selectedContacts.joinToString("") { "@${it.nickname} " }
+                                val isAllSelected = selectedContacts.size == allMembers.size
+                                val atWxIds = if (isAllSelected) {
+                                    "notify@all"
+                                } else {
+                                    selectedContacts.joinToString(",") { it.wxId }
+                                }
+
+                                val item = NewSendMsgItemProto(
+                                    toUser = UserNameProto(currentConv),
+                                    content = atNicknames + content,
+                                    type = 1,
+                                    msgSource = """<msgsource><atuserlist><![CDATA[$atWxIds]]></atuserlist><pua>1</pua><alnode><cf>5</cf><inlenlist>73</inlenlist></alnode><eggIncluded>1</eggIncluded></msgsource>"""
+                                )
+                                val reqProto = NewSendMsgReqProto(
+                                    count = 1,
+                                    items = listOf(item)
+                                )
+                                val reqBytes = WeProto.encodeWithDefaults(reqProto)
+
+                                WePacketHelper.sendCgiRaw(
+                                    "/cgi-bin/micromsg-bin/newsendmsg",
+                                    522,
+                                    0,
+                                    0,
+                                    reqBytes
+                                ) {
+                                    onSuccess { _ ->
+                                        showToast(
+                                            context,
+                                            "已发送（自己无法看到该消息）",
+                                        )
+                                        val now = System.currentTimeMillis()
+                                        WeMessageApi.createSimpleMsgInfoAndInsert(
+                                            10000,
+                                            currentConv,
+                                            context.localizedChatInputQuantity(
+                                                R.plurals.mention_members_message_count,
+                                                selectedContacts.size,
+                                                selectedContacts.size,
+                                            ),
+                                            now
+                                        )
+                                        chatFooter.lastText = ""
+                                    }
+                                }
                             }
                         )
                     }
@@ -235,77 +277,6 @@ object MentionMembers : SwitchFeature(), IResolveDex {
         }
 
         WeChatInputBarMenuApi.addProvider(provider)
-    }
-
-    private fun processSelectedMembers(
-        selectedWxIds: Set<String>,
-        allMembers: List<com.Johnny.wcx.features.api.core.models.IWeContact>,
-        currentConv: String,
-        chatFooter: com.tencent.mm.pluginsdk.ui.chat.ChatFooter,
-        context: android.content.Context
-    ) {
-        val selectedContacts = allMembers.filter { it.wxId in selectedWxIds }
-
-        if (stealthMentionAll) {
-            // 原生发送输入框原文 (不加 @ 昵称前缀), atuserlist
-            // 由入库钩子注入 msgsource
-            val atUserList = selectedContacts
-                .map { it.wxId }
-                .filter { it != "weixin" && it != "filehelper" }
-                .take(MAX_AT_USERS)
-                .joinToString(",")
-            pendingStealthAt = currentConv to atUserList
-            WeChatInputBarMenuApi.performSend(chatFooter)
-            return
-        }
-
-        val content = chatFooter.lastText
-        val atNicknames = selectedContacts.joinToString("") { "@${it.nickname} " }
-        val isAllSelected = selectedContacts.size == allMembers.size
-        val atWxIds = if (isAllSelected) {
-            "notify@all"
-        } else {
-            selectedContacts.joinToString(",") { it.wxId }
-        }
-
-        val item = NewSendMsgItemProto(
-            toUser = UserNameProto(currentConv),
-            content = atNicknames + content,
-            type = 1,
-            msgSource = """<msgsource><atuserlist><![CDATA[$atWxIds]]></atuserlist><pua>1</pua><alnode><cf>5</cf><inlenlist>73</inlenlist></alnode><eggIncluded>1</eggIncluded></msgsource>"""
-        )
-        val reqProto = NewSendMsgReqProto(
-            count = 1,
-            items = listOf(item)
-        )
-        val reqBytes = WeProto.encodeWithDefaults(reqProto)
-
-        WePacketHelper.sendCgiRaw(
-            "/cgi-bin/micromsg-bin/newsendmsg",
-            522,
-            0,
-            0,
-            reqBytes
-        ) {
-            onSuccess { _ ->
-                showToast(
-                    context,
-                    "已发送（自己无法看到该消息）",
-                )
-                val now = System.currentTimeMillis()
-                WeMessageApi.createSimpleMsgInfoAndInsert(
-                    10000,
-                    currentConv,
-                    context.localizedChatInputQuantity(
-                        R.plurals.mention_members_message_count,
-                        selectedContacts.size,
-                        selectedContacts.size,
-                    ),
-                    now
-                )
-                chatFooter.lastText = ""
-            }
-        }
     }
 
     override fun onDisable() {

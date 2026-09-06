@@ -6,6 +6,7 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.media.AudioAttributes
 import android.media.RingtoneManager
 import android.net.Uri
 import androidx.activity.ComponentActivity
@@ -53,6 +54,7 @@ import com.Johnny.wcx.utils.TargetProcesses
 import com.Johnny.wcx.utils.WeLogger
 import com.Johnny.wcx.utils.android.getSystemService
 import com.Johnny.wcx.utils.hookBeforeDirectly
+import dev.ujhhgtg.reflekt.reflekt
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
@@ -220,7 +222,7 @@ object CustomNotificationRingtone : ClickableFeature(), IResolveDex {
                         ensureRingtoneChannel(rule.soundUri)
                     }
                     if (notification.channelId != newChannelId) {
-                        notification.channelId = newChannelId
+                        Notification::class.reflekt().firstField { name = "mChannelId" }.set(notification, newChannelId)
                         WeLogger.i(TAG, "swapped channel to $newChannelId for $convWxId (${rule.mode})")
                     }
                     currentTalker.remove()
@@ -244,7 +246,7 @@ object CustomNotificationRingtone : ClickableFeature(), IResolveDex {
                         ensureRingtoneChannel(rule.soundUri)
                     }
                     if (notification.channelId != newChannelId) {
-                        notification.channelId = newChannelId
+                        Notification::class.reflekt().firstField { name = "mChannelId" }.set(notification, newChannelId)
                         WeLogger.i(TAG, "swapped channel to $newChannelId for $convWxId (${rule.mode})")
                     }
                     currentTalker.remove()
