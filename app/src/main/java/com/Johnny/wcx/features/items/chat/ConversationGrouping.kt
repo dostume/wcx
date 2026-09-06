@@ -83,6 +83,7 @@ import com.Johnny.wcx.dexkit.dsl.dexMethod
 import com.Johnny.wcx.features.api.core.WeConversationApi
 import com.Johnny.wcx.features.api.core.WeDatabaseApi
 import com.Johnny.wcx.features.api.core.models.IWeContact
+import com.Johnny.wcx.features.api.ui.WeNativePickerBridge
 import com.Johnny.wcx.features.core.ClickableFeature
 import com.Johnny.wcx.features.core.Feature
 import com.Johnny.wcx.features.items.contacts.HideContacts
@@ -1054,10 +1055,28 @@ object ConversationGrouping : ClickableFeature(), IResolveDex {
                     when (type) {
                         GroupType.MANUAL -> {
                             Text("已选择 $matchedCount 个对话")
-                            val context = LocalContext.current
+                            val context = LocalContext.current as? Activity ?: return
                             Button(
                                 modifier = Modifier.fillMaxWidth(),
                                 onClick = {
+                                    // 优先唤起微信原版多选页; 不可用时降级自绘选择器
+                                    val launched = WeNativePickerBridge.launch(
+                                        activity = context,
+                                        options = WeNativePickerBridge.Options(
+                                            title = "选择对话",
+                                            multiSelect = true,
+                                        ),
+                                        onResult = { wxIds ->
+                                            if (wxIds.isEmpty()) {
+                                                WeNativePickerBridge.toastEmptySelection()
+                                                return@launch
+                                            }
+                                            members = wxIds
+                                            this.onDismiss()
+                                        }
+                                    )
+                                    if (launched) return@onClick
+
                                     showComposeDialog(context) {
                                         // Load contacts asynchronously to avoid blocking the main
                                         // thread and causing scrolling lag in the selection list.

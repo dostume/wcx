@@ -38,6 +38,7 @@ import com.Johnny.wcx.features.api.core.WeDatabaseApi
 import com.Johnny.wcx.features.api.core.WeDatabaseListenerApi
 import com.Johnny.wcx.features.api.ui.WeChatInputBarApi
 import com.Johnny.wcx.features.api.ui.WeMainActivityBeautifyApi
+import com.Johnny.wcx.features.api.ui.WeNativePickerBridge
 import com.Johnny.wcx.features.core.ClickableFeature
 import com.Johnny.wcx.features.core.Feature
 
@@ -578,6 +579,30 @@ object HideContacts : ClickableFeature(), IResolveDex, WeChatInputBarApi.IInputB
                                 title = "配置隐藏列表",
                                 description = "点击配置联系人隐藏列表",
                                 onClick = {
+                                // 优先唤起微信原版多选页; 不可用时降级自绘选择器
+                                val launched = WeNativePickerBridge.launch(
+                                    activity = context,
+                                    options = WeNativePickerBridge.Options(
+                                        title = "选择要隐藏的联系人",
+                                        multiSelect = true,
+                                    ),
+                                    onResult = { wxIds ->
+                                        if (wxIds.isEmpty()) {
+                                            WeNativePickerBridge.toastEmptySelection()
+                                            return@launch
+                                        }
+                                        hiddenContacts = wxIds
+                                        showToast(
+                                            localizedContactsQuantity(
+                                                R.plurals.contacts_hide_saved,
+                                                wxIds.size,
+                                                wxIds.size,
+                                            ),
+                                        )
+                                    }
+                                )
+                                if (launched) return@BaseWidget
+
                                 showComposeDialog(context) {
                                     ContactsSelector(
                                         title = ("选择要隐藏的联系人"),

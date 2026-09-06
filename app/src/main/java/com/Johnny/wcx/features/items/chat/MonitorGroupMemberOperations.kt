@@ -61,6 +61,7 @@ import com.Johnny.wcx.features.api.core.WeMessageApi
 import com.Johnny.wcx.features.api.core.models.MessageType
 import com.Johnny.wcx.features.api.net.models.protobuf.ChatRoomDataProto
 import com.Johnny.wcx.features.api.ui.WeChatMessageViewApi
+import com.Johnny.wcx.features.api.ui.WeNativePickerBridge
 import com.Johnny.wcx.features.core.ClickableFeature
 import com.Johnny.wcx.features.core.Feature
 import com.Johnny.wcx.preferences.WePrefs

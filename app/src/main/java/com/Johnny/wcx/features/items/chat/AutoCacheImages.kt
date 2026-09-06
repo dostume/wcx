@@ -15,6 +15,7 @@ import com.Johnny.wcx.features.api.core.WeDatabaseApi
 import com.Johnny.wcx.features.api.core.WeDatabaseListenerApi
 import com.Johnny.wcx.features.api.core.WeMessageApi
 import com.Johnny.wcx.features.api.core.models.MessageType
+import com.Johnny.wcx.features.api.ui.WeNativePickerBridge
 import com.Johnny.wcx.features.core.ClickableFeature
 import com.Johnny.wcx.features.core.Feature
 import com.Johnny.wcx.preferences.WePrefs
@@ -96,15 +97,38 @@ object AutoCacheImages : ClickableFeature(), WeDatabaseListenerApi.IInsertListen
                             modifier = Modifier.clickable {
                                 val contacts = WeDatabaseApi.getFriends() + WeDatabaseApi.getGroups()
                                 val currentList = if (useWhitelistState) whitelist else blacklist
+                                val isWhitelist = useWhitelistState
+
+                                // 优先唤起微信原版多选页; 不可用时降级自绘选择器
+                                val launched = WeNativePickerBridge.launch(
+                                    activity = context,
+                                    options = WeNativePickerBridge.Options(
+                                        title = if (isWhitelist) "选择白名单" else "选择黑名单",
+                                        multiSelect = true,
+                                    ),
+                                    onResult = { wxIds ->
+                                        if (wxIds.isEmpty()) {
+                                            WeNativePickerBridge.toastEmptySelection()
+                                            return@launch
+                                        }
+                                        if (isWhitelist) {
+                                            whitelist = wxIds
+                                        } else {
+                                            blacklist = wxIds
+                                        }
+                                        showToast("已保存 ${wxIds.size} 个联系人, 重启微信以使更改生效")
+                                    }
+                                )
+                                if (launched) return@clickable
 
                                 showComposeDialog(context) {
                                     ContactsSelector(
-                                        title = if (useWhitelistState) "选择白名单" else "选择黑名单",
+                                        title = if (isWhitelist) "选择白名单" else "选择黑名单",
                                         contacts = contacts,
                                         initialSelectedWxIds = currentList,
                                         onDismiss = onDismiss
                                     ) { selectedIds ->
-                                        if (useWhitelistState) {
+                                        if (isWhitelist) {
                                             whitelist = selectedIds
                                         } else {
                                             blacklist = selectedIds

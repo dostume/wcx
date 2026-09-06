@@ -5,6 +5,7 @@ import androidx.compose.material3.Text
 import com.Johnny.wcx.features.api.core.WeConversationApi
 import com.Johnny.wcx.features.api.core.WeDatabaseApi
 import com.Johnny.wcx.features.api.core.models.WeGroup
+import com.Johnny.wcx.features.api.ui.WeNativePickerBridge
 import com.Johnny.wcx.features.core.ClickableFeature
 import com.Johnny.wcx.features.core.Feature
 import com.Johnny.wcx.ui.content.AlertDialogContent
@@ -32,6 +33,23 @@ object DeleteSplitGroupChats : ClickableFeature() {
             showToast("未发现假群组!")
             return
         }
+
+        // 优先唤起微信原版多选页; 不可用时降级自绘选择器
+        val launched = WeNativePickerBridge.launch(
+            activity = context,
+            options = WeNativePickerBridge.Options(
+                title = "删除假群组 (共 ${fakeGroups.size} 个)",
+                multiSelect = true,
+            ),
+            onResult = { wxIds ->
+                if (wxIds.isEmpty()) {
+                    WeNativePickerBridge.toastEmptySelection()
+                    return@launch
+                }
+                confirmAndDelete(context, wxIds.toSet(), fakeGroups)
+            }
+        )
+        if (launched) return
 
         showComposeDialog(context) {
             ContactsSelector(
