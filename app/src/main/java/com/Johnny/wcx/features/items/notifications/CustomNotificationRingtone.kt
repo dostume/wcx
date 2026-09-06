@@ -188,7 +188,7 @@ object CustomNotificationRingtone : ClickableFeature(), IResolveDex {
             hookNotificationBuildBefore()
         }.onFailure { WeLogger.e(TAG, "hook Notification.Builder.build failed", it) }
 
-        WeLogger.i(TAG, "ringtone hooks ready (dealNotify talker + Builder.setSound + setFlag)")
+        WeLogger.i(TAG, "ringtone hooks ready (dealNotify talker + Builder.setSound)")
     }
 
     // 诊断日志去重：同一关键现象只记一次，避免来一条消息刷一条
@@ -231,8 +231,7 @@ object CustomNotificationRingtone : ClickableFeature(), IResolveDex {
                                 }
                             }
                         }
-                        builder.setOnlyAlertOnce(true)
-                        WeLogger.i(TAG, "Builder.setSound + setOnlyAlertOnce set for $convWxId (${rule.mode})")
+                        WeLogger.i(TAG, "Builder.setSound set for $convWxId (${rule.mode})")
                     } catch (e: Throwable) {
                         WeLogger.e(TAG, "apply ringtone override failed", e)
                     }
