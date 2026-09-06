@@ -102,8 +102,7 @@ jobs:
           # 与下方 Publish 步骤的 tag 同源, 写入 APK 的 BuildConfig.RELEASE_TAG
           WCX_RELEASE_TAG: auto-${{ steps.upstream.outputs.sha }}
         run: |
-          ./gradlew --no-daemon assembleRelease \
-            -x lintVitalStandardRelease -x lintVitalLegacyRelease
+          ./gradlew --no-daemon assembleRelease
 
       - name: Upload APK artifacts
         if: steps.merge.outputs.changed == 'true' || github.event_name != 'schedule' || inputs.force_release == true
