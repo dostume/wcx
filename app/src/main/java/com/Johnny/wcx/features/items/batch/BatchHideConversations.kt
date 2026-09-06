@@ -5,6 +5,7 @@ import androidx.activity.ComponentActivity
 import androidx.compose.material3.Text
 import com.Johnny.wcx.features.api.core.WeConversationApi
 import com.Johnny.wcx.features.api.core.WeDatabaseApi
+import com.Johnny.wcx.features.api.ui.WeNativePickerBridge
 import com.Johnny.wcx.features.core.ClickableFeature
 import com.Johnny.wcx.features.core.Feature
 import com.Johnny.wcx.ui.content.AlertDialogContent
@@ -30,6 +31,23 @@ object BatchHideConversations : ClickableFeature() {
 
     override fun onClick(context: ComponentActivity) {
         val contacts = WeDatabaseApi.getFriends() + WeDatabaseApi.getGroups()
+
+        // 优先唤起微信原版多选页; 不可用时降级自绘选择器
+        val launched = WeNativePickerBridge.launch(
+            activity = context,
+            options = WeNativePickerBridge.Options(
+                title = "选择要隐藏的对话",
+                multiSelect = true,
+            ),
+            onResult = { wxIds ->
+                if (wxIds.isEmpty()) {
+                    WeNativePickerBridge.toastEmptySelection()
+                    return@launch
+                }
+                confirmAndHide(context, wxIds.toSet())
+            }
+        )
+        if (launched) return
 
         showComposeDialog(context) {
             ContactsSelector(

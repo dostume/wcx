@@ -15,6 +15,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.Johnny.wcx.features.api.core.WeDatabaseApi
 import com.Johnny.wcx.features.api.core.models.MessageType
+import com.Johnny.wcx.features.api.ui.WeNativePickerBridge
 import com.Johnny.wcx.features.core.ClickableFeature
 import com.Johnny.wcx.features.core.Feature
 import com.Johnny.wcx.ui.content.AlertDialogContent
@@ -53,6 +54,23 @@ object ExportChatHistory : ClickableFeature() {
 
     override fun onClick(context: ComponentActivity) {
         val contacts = WeDatabaseApi.getFriends() + WeDatabaseApi.getGroups()
+
+        // 优先唤起微信原版多选页; 不可用时降级自绘选择器
+        val launched = WeNativePickerBridge.launch(
+            activity = context,
+            options = WeNativePickerBridge.Options(
+                title = "选择要导出的对话",
+                multiSelect = true,
+            ),
+            onResult = { wxIds ->
+                if (wxIds.isEmpty()) {
+                    WeNativePickerBridge.toastEmptySelection()
+                    return@launch
+                }
+                showFormatDialog(context, wxIds.toSet())
+            }
+        )
+        if (launched) return
 
         showComposeDialog(context) {
             var selectedWxIds by remember { mutableStateOf(emptySet<String>()) }
@@ -103,6 +121,36 @@ object ExportChatHistory : ClickableFeature() {
                     }
                 )
             }
+        }
+    }
+
+    private fun showFormatDialog(context: ComponentActivity, wxIds: Set<String>) {
+        showComposeDialog(context) {
+            var selectedFormat by remember { mutableStateOf(ExportFormat.TXT) }
+            AlertDialogContent(
+                title = { Text("选择导出格式") },
+                text = {
+                    DefaultColumn {
+                        Text("已选择 ${wxIds.size} 个对话")
+                        Text("导出后文件将保存到: Download/WCX/")
+                        Spacer(Modifier.padding(top = 8.dp))
+                        ExportFormat.values().forEach { format ->
+                            TextButton(
+                                onClick = { selectedFormat = format }
+                            ) {
+                                val icon = if (selectedFormat == format) "● " else "○ "
+                                Text(icon + format.displayName)
+                            }
+                        }
+                    }
+                },
+                confirmButton = {
+                    Button(onClick = {
+                        onDismiss()
+                        exportChatHistory(wxIds, selectedFormat)
+                    }) { Text("导出") }
+                }
+            )
         }
     }
 

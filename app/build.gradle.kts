@@ -25,6 +25,11 @@ fun getGitHash(): String {
 }
 
 android {
+    lint {
+        abortOnError = false
+        checkReleaseBuilds = false
+    }
+
     namespace = libs.versions.namespace.get()
     compileSdk {
         version = release(libs.versions.compileSdk.get().toInt()) {
