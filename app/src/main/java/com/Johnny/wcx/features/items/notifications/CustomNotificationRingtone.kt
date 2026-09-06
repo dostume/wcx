@@ -185,10 +185,10 @@ object CustomNotificationRingtone : ClickableFeature(), IResolveDex {
         }.onFailure { WeLogger.e(TAG, "hook dealNotify failed", it) }
 
         runCatching {
-            hookNotificationBuild()
+            hookNotificationBuildBefore()
         }.onFailure { WeLogger.e(TAG, "hook Notification.Builder.build failed", it) }
 
-        WeLogger.i(TAG, "ringtone hooks ready (dealNotify talker capture + Builder.build redirect)")
+        WeLogger.i(TAG, "ringtone hooks ready (dealNotify talker + Builder.setSound + setFlag)")
     }
 
     // 诊断日志去重：同一关键现象只记一次，避免来一条消息刷一条
@@ -199,69 +199,62 @@ object CustomNotificationRingtone : ClickableFeature(), IResolveDex {
         if (diagLogged.add(key)) WeLogger.w(TAG, message())
     }
 
+    // ThreadLocal：dealNotify 存入 convWxId，build() before 阶段读取并写入 Builder，after 阶段消费
+    private val currentPendingRule = ThreadLocal<RingtoneRule?>()
+
     /**
-     * 在 Notification.Builder.build() **完成后**统一改道。
+     * 两步 Hook：
+     * 1. before 阶段：通过 dealNotify 传来的 ThreadLocal 找到规则，用公共 API setSound() 写入声音、
+     *    setFlag() 写入 FLAG_ONLY_ALERT_ONCE——两者均为 Android 4.1+ 公开接口，无需任何反射字段。
+     * 2. after 阶段：消费 ThreadLocal（防内存泄漏），打一次诊断日志。
      *
-     * 注意时机：channelId 由 Builder 在 build() 内部才写回 Notification，若 hook
-     * before 阶段读取会拿到中间态（空/旧值），导致渠道判断恒不命中 → 静默失效。
-     * 改在 after 读最终对象，直接改写 Notification.channelId 公共字段即可改道
-     * （与 setChannelId 效果一致：系统在 notify 时读取该字段分配渠道）。
-     * hookAllMethods 同时覆盖 build() 与 build(Bundle) 两个重载，微信调用哪个都能截获。
+     * 全程不调用 Notification.channelId / mGroupKey / flags 等私有字段，彻底避免 NoSuchFieldException。
      */
-    private fun hookNotificationBuild() {
+    private fun hookNotificationBuildBefore() {
         XposedBridge.hookAllMethods(
             Notification.Builder::class.java, "build",
             object : XC_MethodHook() {
+                override fun beforeHookedMethod(param: MethodHookParam) {
+                    try {
+                        val builder = param.thisObject as Notification.Builder
+                        val convWxId = currentTalker.get() ?: return
+                        val rule = matchRule(convWxId, builder) ?: run {
+                            diagOnce("no_rule") { "no ringtone rule matched $convWxId, leaving as-is" }
+                            return
+                        }
+                        currentPendingRule.set(rule)
+                        when (rule.mode) {
+                            RuleMode.SILENT -> builder.setSound(null, null)
+                            RuleMode.RINGTONE -> {
+                                if (rule.soundUri.isNotBlank()) {
+                                    val uri = Uri.parse(rule.soundUri)
+                                    val attrs = AudioAttributes.Builder()
+                                        .setUsage(AudioAttributes.USAGE_NOTIFICATION)
+                                        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                                        .build()
+                                    builder.setSound(uri, attrs)
+                                }
+                            }
+                        }
+                        builder.setFlag(Notification.FLAG_ONLY_ALERT_ONCE, true)
+                        WeLogger.i(TAG, "Builder.setSound + setFlag set for $convWxId (${rule.mode})")
+                    } catch (e: Throwable) {
+                        WeLogger.e(TAG, "apply ringtone override failed", e)
+                    }
+                }
+
                 override fun afterHookedMethod(param: MethodHookParam) {
-                    val notif = param.result as? Notification ?: return
-                    runCatching { applyOverride(notif) }
-                        .onFailure { WeLogger.e(TAG, "apply ringtone override failed", it) }
+                    currentPendingRule.remove()
                 }
             }
         )
     }
 
-    private fun applyOverride(notif: Notification) {
-        // 已在我们的渠道（或空 channel）则跳过；防止 build()/build(Bundle) 双触发重复处理
-        val curChannel = notif.channelId
-        if (curChannel == SILENT_CHANNEL || curChannel?.startsWith(RING_CHANNEL_PREFIX) == true) return
-
-        // 读走即清空 ThreadLocal，避免脏值串到无 dealNotify 前置的通知
-        val convWxId = currentTalker.get()
-        if (convWxId == null) {
-            diagOnce("no_talker") {
-                "notification built without dealNotify talker on this thread (channel=$curChannel); " +
-                    "dealNotify→build 可能跨线程，本次不处理"
-            }
-            return
-        }
-        currentTalker.remove()
-
-        val rule = matchRule(convWxId, notif)
-        if (rule == null) {
-            diagOnce("no_rule") { "no ringtone rule matched $convWxId (channel=$curChannel), leaving as-is" }
-            return
-        }
-        val newChannel = when (rule.mode) {
-            RuleMode.SILENT -> SILENT_CHANNEL
-            RuleMode.RINGTONE -> {
-                if (rule.soundUri.isBlank()) return
-                ensureRingtoneChannel(rule.soundUri)
-            }
-        }
-        // channelId 在编译 stubs 里是只读（真机字段可变），统一走反射赋值
-        Notification::class.java.getDeclaredField("channelId").apply {
-            isAccessible = true
-            set(notif, newChannel)
-        }
-        WeLogger.i(TAG, "redirected notification of $convWxId -> channel $newChannel")
-    }
-
-    private fun matchRule(convWxId: String, notif: Notification): RingtoneRule? {
+    private fun matchRule(convWxId: String, builder: Notification.Builder): RingtoneRule? {
         val allRules = rules
         if (allRules.isEmpty()) return null
 
-        val rawText = notif.extras.getCharSequence(Notification.EXTRA_TEXT)?.toString()
+        val rawText = builder.extras?.getCharSequence(Notification.EXTRA_TEXT)?.toString()
         val body = rawText?.let { text ->
             messageRegex.find(text)?.groupValues?.get(3)?.takeIf { it.isNotEmpty() } ?: text
         }.orEmpty()
