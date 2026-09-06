@@ -591,7 +591,7 @@ object HideContacts : ClickableFeature(), IResolveDex, WeChatInputBarApi.IInputB
                                             WeNativePickerBridge.toastEmptySelection()
                                             return@launch
                                         }
-                                        hiddenContacts = wxIds
+                                        hiddenContacts = wxIds.toSet()
                                         showToast(
                                             localizedContactsQuantity(
                                                 R.plurals.contacts_hide_saved,

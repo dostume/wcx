@@ -112,6 +112,7 @@ import kotlin.io.path.exists
 import kotlin.io.path.readText
 import kotlin.io.path.writeText
 import java.lang.reflect.Modifier as JavaModifier
+import com.Johnny.wcx.features.api.ui.WeNativePickerBridge
 
 @Feature(name = "对话分组", categories = ["聊天"], description = "向主页顶部添加 Tab 栏, 将对话分组\n建议同时启用「界面美化/隐藏主页下滑「最近」页」")
 object ConversationGrouping : ClickableFeature(), IResolveDex {
@@ -1072,6 +1073,24 @@ object ConversationGrouping : ClickableFeature(), IResolveDex {
 
                                         val loadedContacts = contacts
                                         if (loadedContacts != null) {
+                                            // 优先唤起微信原版多选页; 页面不可用时降级自绘选择器
+                                            val picked = WeNativePickerBridge.launch(
+                                                activity = LocalContext.current as? Activity ?: return@showComposeDialog,
+                                                options = WeNativePickerBridge.Options(
+                                                    title = "选择对话",
+                                                    multiSelect = true,
+                                                ),
+                                                onResult = { wxIds ->
+                                                    if (wxIds.isEmpty()) {
+                                                        WeNativePickerBridge.toastEmptySelection()
+                                                        return@launch
+                                                    }
+                                                    members = wxIds.toSet()
+                                                    onDismiss()
+                                                }
+                                            )
+                                            if (picked) return@showComposeDialog
+
                                             ContactsSelector(
                                                 title = "选择对话",
                                                 contacts = loadedContacts,

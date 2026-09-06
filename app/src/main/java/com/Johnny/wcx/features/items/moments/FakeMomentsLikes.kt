@@ -105,7 +105,7 @@ object FakeMomentsLikes : SwitchFeature(), WeMomentsContextMenuApi.IMenuItemsPro
                                                     fakeLikeWxIds.remove(snsId)
                                                     showToast("已清除伪点赞配置")
                                                 } else {
-                                                    fakeLikeWxIds[snsId] = wxIds
+                                                    fakeLikeWxIds[snsId] = wxIds.toSet()
                                                     showToast("已设置 ${wxIds.size} 个伪点赞")
                                                 }
                                             }

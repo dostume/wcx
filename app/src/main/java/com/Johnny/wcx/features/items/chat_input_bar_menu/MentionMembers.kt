@@ -40,6 +40,7 @@ import com.Johnny.wcx.ui.utils.showComposeDialog
 import com.Johnny.wcx.utils.android.runOnUiThread
 import com.Johnny.wcx.utils.android.showToast
 import com.Johnny.wcx.utils.strings.isGroupChatWxId
+import com.Johnny.wcx.features.api.ui.WeNativePickerBridge
 
 /**
  * @所有人 (含隐蔽@模式)。
@@ -162,23 +163,22 @@ object MentionMembers : SwitchFeature(), IResolveDex {
                     showComposeDialog(context) {
                         val dialogContext = LocalContext.current
                         val localizedContext = LocalContext.current
-                        ContactsSelector(
-                            title = "@所有人",
-                            contacts = allMembers,
-                            initialSelectedWxIds = allMembers.map { it.wxId }.toSet(),
-                            onDismiss = onDismiss,
-                            onConfirm = { selectedWxIds ->
-                                if (selectedWxIds.isEmpty()) {
-                                    showToast(
-                                        dialogContext,
-                                        "请选择至少一个好友！",
-                                    )
-                                    return@ContactsSelector
+                        // 优先唤起微信原版多选页; 页面不可用时降级自绘选择器
+                        val activity = LocalContext.current as? Activity
+                        val launched = activity != null && WeNativePickerBridge.launch(
+                            activity = activity,
+                            options = WeNativePickerBridge.Options(
+                                title = "@所有人",
+                                multiSelect = true,
+                                allowFriends = true,
+                                allowChatrooms = false,
+                            ),
+                            onResult = { wxIds ->
+                                if (wxIds.isEmpty()) {
+                                    WeNativePickerBridge.toastEmptySelection()
+                                    return@launch
                                 }
-
-                                onDismiss()
-
-                                val selectedContacts = allMembers.filter { it.wxId in selectedWxIds }
+                                val selectedContacts = allMembers.filter { it.wxId in wxIds }
 
                                 if (stealthMentionAll) {
                                     // 原生发送输入框原文 (不加 @ 昵称前缀), atuserlist
@@ -190,7 +190,7 @@ object MentionMembers : SwitchFeature(), IResolveDex {
                                         .joinToString(",")
                                     pendingStealthAt = currentConv to atUserList
                                     WeChatInputBarMenuApi.performSend(chatFooter)
-                                    return@ContactsSelector
+                                    return@launch
                                 }
 
                                 val content = chatFooter.lastText

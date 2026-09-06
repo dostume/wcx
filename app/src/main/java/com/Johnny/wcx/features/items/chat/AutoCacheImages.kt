@@ -112,9 +112,9 @@ object AutoCacheImages : ClickableFeature(), WeDatabaseListenerApi.IInsertListen
                                             return@launch
                                         }
                                         if (isWhitelist) {
-                                            whitelist = wxIds
+                                            whitelist = wxIds.toSet()
                                         } else {
-                                            blacklist = wxIds
+                                            blacklist = wxIds.toSet()
                                         }
                                         showToast("已保存 ${wxIds.size} 个联系人, 重启微信以使更改生效")
                                     }

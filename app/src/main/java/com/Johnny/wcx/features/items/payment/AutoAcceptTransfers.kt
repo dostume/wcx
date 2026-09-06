@@ -205,9 +205,9 @@ object AutoAcceptTransfers : ClickableFeature(), WeDatabaseListenerApi.IInsertLi
                                             return@launch
                                         }
                                         if (isWhitelist) {
-                                            transferWhitelist = wxIds
+                                            transferWhitelist = wxIds.toSet()
                                         } else {
-                                            transferBlacklist = wxIds
+                                            transferBlacklist = wxIds.toSet()
                                         }
                                         showToast("已保存 ${wxIds.size} 个联系人")
                                     }

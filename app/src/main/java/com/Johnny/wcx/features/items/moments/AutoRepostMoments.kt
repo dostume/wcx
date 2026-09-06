@@ -130,9 +130,9 @@ object AutoRepostMoments : AutoMomentsBase(),
                                             return@launch
                                         }
                                         if (isWhitelist) {
-                                            momentsWhitelist = wxIds
+                                            momentsWhitelist = wxIds.toSet()
                                         } else {
-                                            momentsBlacklist = wxIds
+                                            momentsBlacklist = wxIds.toSet()
                                         }
                                         showToast("已保存 ${wxIds.size} 个联系人, 重启微信以使更改生效")
                                     }

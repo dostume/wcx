@@ -13,6 +13,7 @@ import com.Johnny.wcx.features.core.SwitchFeature
 import com.Johnny.wcx.ui.content.ContactsSelector
 import com.Johnny.wcx.ui.utils.ForwardIcon
 import com.Johnny.wcx.ui.utils.showComposeDialog
+import androidx.compose.ui.platform.LocalContext
 import com.Johnny.wcx.utils.AudioUtils
 import com.Johnny.wcx.utils.WeLogger
 import com.Johnny.wcx.utils.android.showToast
@@ -22,6 +23,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import android.app.Activity
+import com.Johnny.wcx.features.api.ui.WeNativePickerBridge
 
 @Feature(
     name = "转发消息",
@@ -72,6 +75,24 @@ object ForwardMessages : SwitchFeature(),
             val contacts = WeDatabaseApi.getFriends() + WeDatabaseApi.getGroups()
 
             withContext(Dispatchers.Main) {
+                // 优先唤起微信原版多选页; 页面不可用时降级自绘选择器
+                val activity = runCatching { (view.context as? Activity) }.getOrNull()
+                val launched = activity != null && WeNativePickerBridge.launch(
+                    activity = activity,
+                    options = WeNativePickerBridge.Options(
+                        title = "选择转发对象",
+                        multiSelect = true,
+                    ),
+                    onResult = { wxIds ->
+                        if (wxIds.isEmpty()) {
+                            WeNativePickerBridge.toastEmptySelection()
+                            return@launch
+                        }
+                        onConfirm(wxIds.toSet())
+                    }
+                )
+                if (launched) return@withContext
+
                 showComposeDialog(view.context) {
                     ContactsSelector(
                         title = "选择转发对象",
