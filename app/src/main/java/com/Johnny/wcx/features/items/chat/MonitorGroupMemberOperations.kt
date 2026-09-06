@@ -1,7 +1,6 @@
 package com.Johnny.wcx.features.items.chat
 
 import android.annotation.SuppressLint
-import android.app.Activity
 import android.content.ContentValues
 import android.graphics.Color as AndroidColor
 import android.text.SpannableString
@@ -62,7 +61,6 @@ import com.Johnny.wcx.features.api.core.WeMessageApi
 import com.Johnny.wcx.features.api.core.models.MessageType
 import com.Johnny.wcx.features.api.net.models.protobuf.ChatRoomDataProto
 import com.Johnny.wcx.features.api.ui.WeChatMessageViewApi
-import com.Johnny.wcx.features.api.ui.WeNativePickerBridge
 import com.Johnny.wcx.features.core.ClickableFeature
 import com.Johnny.wcx.features.core.Feature
 import com.Johnny.wcx.preferences.WePrefs
@@ -73,7 +71,6 @@ import com.Johnny.wcx.ui.content.Button
 import com.Johnny.wcx.ui.content.DefaultColumn
 import com.Johnny.wcx.ui.content.TextButton
 import com.Johnny.wcx.ui.utils.showComposeDialog
-import androidx.compose.ui.platform.LocalContext
 import com.Johnny.wcx.utils.WeLogger
 import com.Johnny.wcx.utils.android.showToast
 import com.Johnny.wcx.utils.reflection.BString
@@ -1027,37 +1024,16 @@ object MonitorGroupMemberOperations : ClickableFeature(), IResolveDex,
                                 val contacts = remember {
                                     WeDatabaseApi.getContacts().filter { it.wxId.endsWith("@chatroom") }
                                 }
-                                // 优先唤起微信原版多选页; 页面不可用时降级自绘选择器
-                                val activity = LocalContext.current as? Activity
-                                val picked = activity != null && WeNativePickerBridge.launch(
-                                    activity = activity,
-                                    options = WeNativePickerBridge.Options(
-                                        title = "选择监控群聊",
-                                        multiSelect = true,
-                                        allowFriends = false,
-                                        allowChatrooms = true,
-                                    ),
-                                    onResult = { wxIds ->
-                                        if (wxIds.isEmpty()) {
-                                            WeNativePickerBridge.toastEmptySelection()
-                                            return@launch
-                                        }
-                                        selectedGroupsState = wxIds.toSet()
+                                ContactsSelector(
+                                    title = "选择监控群聊",
+                                    contacts = contacts,
+                                    initialSelectedWxIds = selectedGroupsState,
+                                    onDismiss = { showGroupSelector = false },
+                                    onConfirm = { newSelection ->
+                                        selectedGroupsState = newSelection
                                         showGroupSelector = false
                                     }
                                 )
-                                if (!picked) {
-                                    ContactsSelector(
-                                        title = "选择监控群聊",
-                                        contacts = contacts,
-                                        initialSelectedWxIds = selectedGroupsState,
-                                        onDismiss = { showGroupSelector = false },
-                                        onConfirm = { newSelection ->
-                                            selectedGroupsState = newSelection
-                                            showGroupSelector = false
-                                        }
-                                    )
-                                }
                             }
 
                             // 分群独立欢迎语配置

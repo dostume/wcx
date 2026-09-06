@@ -81,7 +81,6 @@ import kotlin.io.path.exists
 import kotlin.io.path.readText
 import kotlin.io.path.writeText
 import java.lang.reflect.Modifier as JavaModifier
-import com.Johnny.wcx.features.api.ui.WeNativePickerBridge
 
 @Feature(name = "对话归拢", categories = ["聊天"], description = "将多个对话归拢在一个文件夹内\n设置对话头像需同时启用「自定义好友本地头像」")
 object ConversationAggregation : ClickableFeature(),
@@ -1521,33 +1520,14 @@ object ConversationAggregation : ClickableFeature(),
                                     modifier = Modifier.weight(1f),
                                     onClick = {
                                         showComposeDialog(context) {
-                                            // 优先唤起微信原版多选页; 页面不可用时降级自绘选择器
-                                            val activity = LocalContext.current as? Activity
-                                            val picked = activity != null && WeNativePickerBridge.launch(
-                                                activity = activity,
-                                                options = WeNativePickerBridge.Options(
-                                                    title = "选择对话",
-                                                    multiSelect = true,
-                                                ),
-                                                onResult = { wxIds ->
-                                                    if (wxIds.isEmpty()) {
-                                                        WeNativePickerBridge.toastEmptySelection()
-                                                        return@launch
-                                                    }
-                                                    members = wxIds.toSet()
-                                                    onDismiss()
-                                                }
-                                            )
-                                            if (picked) return@showComposeDialog
-
                                             ContactsSelector(
                                                 title = "选择对话",
                                                 contacts = remember { WeDatabaseApi.getContacts() },
                                                 initialSelectedWxIds = members,
-                                                onDismiss = onDismiss,
+                                                onDismiss = this.onDismiss,
                                                 onConfirm = {
                                                     members = it
-                                                    onDismiss()
+                                                    this.onDismiss()
                                                 }
                                             )
                                         }

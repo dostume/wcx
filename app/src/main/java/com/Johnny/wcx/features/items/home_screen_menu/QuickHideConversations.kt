@@ -23,7 +23,6 @@ import com.Johnny.wcx.activity.TransparentActivity
 import com.Johnny.wcx.features.api.core.WeConversationApi
 import com.Johnny.wcx.features.api.core.WeDatabaseApi
 import com.Johnny.wcx.features.api.ui.WeHomeScreenPopupMenuApi
-import com.Johnny.wcx.features.api.ui.WeNativePickerBridge
 import com.Johnny.wcx.features.core.Feature
 import com.Johnny.wcx.features.core.SwitchFeature
 import com.Johnny.wcx.ui.content.AlertDialogContent
@@ -81,23 +80,6 @@ object QuickHideConversations : SwitchFeature(), WeHomeScreenPopupMenuApi.IMenuI
 
     private fun showHideDialog(activity: ComponentActivity) {
         val contacts = WeDatabaseApi.getFriends() + WeDatabaseApi.getGroups()
-
-        // 优先唤起微信原版多选页; 不可用时降级自绘选择器
-        val launched = WeNativePickerBridge.launch(
-            activity = activity,
-            options = WeNativePickerBridge.Options(
-                title = "选择要隐藏的对话",
-                multiSelect = true,
-            ),
-            onResult = { wxIds ->
-                if (wxIds.isEmpty()) {
-                    WeNativePickerBridge.toastEmptySelection()
-                    return@launch
-                }
-                showScheduleDialog(activity, wxIds.toSet())
-            }
-        )
-        if (launched) return
 
         showComposeDialog(activity) {
             ContactsSelector(

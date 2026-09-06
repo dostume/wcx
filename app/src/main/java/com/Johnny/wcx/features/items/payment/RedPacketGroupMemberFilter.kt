@@ -1,6 +1,5 @@
 package com.Johnny.wcx.features.items.payment
 
-import android.app.Activity
 import android.content.Context
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -21,7 +20,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.Johnny.wcx.features.api.core.WeDatabaseApi
-import com.Johnny.wcx.features.api.ui.WeNativePickerBridge
 import com.Johnny.wcx.ui.content.AlertDialogContent
 import com.Johnny.wcx.ui.content.Button
 import com.Johnny.wcx.ui.content.ContactsSelector
@@ -179,30 +177,9 @@ object RedPacketGroupMemberFilter {
             var selectingMembers by remember { mutableStateOf(false) }
 
             if (selectingMembers) {
-                // 优先唤起微信原版多选页(仅群成员); 不可用时降级自绘选择器
-                val groupMembers = remember { WeDatabaseApi.getGroupMembers(rule.groupId) }
-                val launched = WeNativePickerBridge.launch(
-                    activity = context as? Activity ?: return@showComposeDialog,
-                    options = WeNativePickerBridge.Options(
-                        title = if (useWhitelist) "选择白名单成员" else "选择黑名单成员",
-                        multiSelect = true,
-                        allowFriends = false,
-                        allowChatrooms = false,
-                    ),
-                    onResult = { wxIds ->
-                        if (wxIds.isEmpty()) {
-                            WeNativePickerBridge.toastEmptySelection()
-                            return@launch
-                        }
-                        members = wxIds.toSet()
-                        selectingMembers = false
-                    }
-                )
-                if (launched) return@showComposeDialog
-
                 ContactsSelector(
                     title = if (useWhitelist) "选择白名单成员" else "选择黑名单成员",
-                    contacts = groupMembers,
+                    contacts = remember { WeDatabaseApi.getGroupMembers(rule.groupId) },
                     initialSelectedWxIds = members,
                     onDismiss = { selectingMembers = false },
                     onConfirm = {

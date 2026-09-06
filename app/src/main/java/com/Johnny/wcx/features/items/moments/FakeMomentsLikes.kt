@@ -23,7 +23,6 @@ import dev.ujhhgtg.reflekt.reflekt
 import dev.ujhhgtg.reflekt.utils.createInstance
 import com.Johnny.wcx.features.api.core.WeDatabaseApi
 import com.Johnny.wcx.features.api.core.WeDatabaseListenerApi
-import com.Johnny.wcx.features.api.ui.WeNativePickerBridge
 import com.Johnny.wcx.features.api.ui.WeMomentsContextMenuApi
 import com.Johnny.wcx.features.core.Feature
 import com.Johnny.wcx.features.core.SwitchFeature
@@ -89,29 +88,6 @@ object FakeMomentsLikes : SwitchFeature(), WeMomentsContextMenuApi.IMenuItemsPro
                                 Button(
                                     onClick = {
                                         onDismiss()
-                                        // 优先唤起微信原版多选页; 不可用时降级自绘选择器
-                                        val launched = WeNativePickerBridge.launch(
-                                            activity = moment.activity,
-                                            options = WeNativePickerBridge.Options(
-                                                title = "选择伪点赞用户",
-                                                multiSelect = true,
-                                            ),
-                                            onResult = { wxIds ->
-                                                if (wxIds.isEmpty()) {
-                                                    WeNativePickerBridge.toastEmptySelection()
-                                                    return@launch
-                                                }
-                                                if (wxIds.isEmpty()) {
-                                                    fakeLikeWxIds.remove(snsId)
-                                                    showToast("已清除伪点赞配置")
-                                                } else {
-                                                    fakeLikeWxIds[snsId] = wxIds.toSet()
-                                                    showToast("已设置 ${wxIds.size} 个伪点赞")
-                                                }
-                                            }
-                                        )
-                                        if (launched) return@Button
-
                                         showComposeDialog(moment.activity) {
                                             ContactsSelector(
                                                 title = "选择伪点赞用户",
