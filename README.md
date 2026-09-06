@@ -188,6 +188,12 @@ API + MCP 服务器 · WeAgent 内置 AI 助手 · 禁止微信检测 Xposed · 
 - 上游项目：[Johnny520/wcx](https://github.com/Johnny520/wcx)（WeKit）
 - 本分支的全部功能实现均基于上游代码，新增功能见「本仓库新增功能」一节
 
+## 💝 捐赠
+
+如果您觉得这个项目对您有帮助，欢迎支持一下～
+
+[![爱发电](https://img.shields.io/badge/爱发电-支持一下-ff69b4?style=for-the-badge)](https://www.ifdian.net/a/Johnny520)
+
 ## 📄 许可证
 
 见 [LICENSE](LICENSE)
