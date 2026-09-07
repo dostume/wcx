@@ -9,6 +9,7 @@ object Preferences {
     const val SHOW_STARTUP_TOAST = "toast_startup"
     const val RESET_DEX_ON_HOT_UPDATE = "reset_dex_on_hot_upd"
     const val MATCH_GENERIC_WXID_EXP = "match_generic_wxid"
+    const val DISABLE_ALL_LOGS = "disable_all_logs"
 
     // Settings UI theming
     const val THEME_MODE = "settings_theme_mode"

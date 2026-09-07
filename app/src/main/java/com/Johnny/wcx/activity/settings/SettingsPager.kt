@@ -85,6 +85,7 @@ import com.composables.icons.materialsymbols.outlined.Style
 import com.composables.icons.materialsymbols.outlined.Sync
 import com.composables.icons.materialsymbols.outlined.Update
 import com.composables.icons.materialsymbols.outlined.Upload
+import com.composables.icons.materialsymbols.outlined.Volume_off
 import com.composables.icons.materialsymbols.outlined.Volunteer_activism
 import com.composables.icons.materialsymbols.outlined.Wallpaper
 import com.composables.icons.materialsymbols.outlined.Qr_code
@@ -201,6 +202,12 @@ fun SettingsPager(onOpenLicense: () -> Unit, onOpenAcknowledgements: () -> Unit)
         item {
             MiuixSmallTitle(text = "调试", modifier = Modifier.padding(top = 12.dp))
             Card(modifier = Modifier.fillMaxWidth()) {
+                PrefSwitch(
+                    key = Preferences.DISABLE_ALL_LOGS,
+                    title = "关闭所有日志",
+                    summary = "开启后不输出、不记录任何模块日志 (logcat 与日志文件), 可减少性能开销与隐私暴露",
+                    icon = MaterialSymbols.Outlined.Volume_off,
+                )
                 PrefSwitch(
                     key = Preferences.VERBOSE_LOG,
                     title = "详细日志",
