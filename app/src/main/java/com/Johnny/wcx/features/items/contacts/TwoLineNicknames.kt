@@ -47,11 +47,12 @@ object TwoLineNicknames : SwitchFeature(),
     private const val TAG = "TwoLineNicknames"
 
     /**
-     * 昵称/标题档字号阈值（px）。标题与昵称约 17sp, 摘要/时间约 13sp,
-     * 按钮与辅助文本 <=15sp —— 取 16sp 只命中标题档。
+     * 昵称/标题档字号阈值（px）。会话列表标题约 15sp、聊天页/联系人昵称约 17sp,
+     * 而会话摘要/时间约 13sp、底部标签页约 10sp —— 取 14sp 覆盖全部标题档并
+     * 排除摘要档（与 Themes 主/次文本 13sp 分界一致）。
      */
     private val titleTextSizeThresholdPx: Float
-        get() = 16f * HostInfo.application.resources.displayMetrics.density
+        get() = 14f * HostInfo.application.resources.displayMetrics.density
 
     private val appliedViews = java.util.Collections.newSetFromMap(
         java.util.WeakHashMap<View, Boolean>()
@@ -130,14 +131,14 @@ object TwoLineNicknames : SwitchFeature(),
                     val tv = thisObject as? TextView ?: return@hookAfter
                     if (isTitleLikeSingleLine(tv)) {
                         applyTwoLine(tv, removeWidthCap = false)
-                        WeLogger.d(TAG, "attach two-line applied in ${tv.context.javaClass.name.take(40)}: \"${tv.text?.take(20)}\"")
+                        WeLogger.d(TAG, "attach two-line applied: \"${tv.text?.take(20)}\"")
                     }
                 }
         }.onFailure {
             WeLogger.w(TAG, "failed to hook TextView.onAttachedToWindow", it)
             return
         }
-        WeLogger.i(TAG, "global TextView attach hook installed")
+        WeLogger.i(TAG, "global TextView attach hook installed (threshold 14sp)")
     }
 
     /** 属性启发式：单行 + 标题档字号的 TextView 视为昵称/标题 */
