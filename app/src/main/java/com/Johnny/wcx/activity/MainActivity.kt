@@ -208,17 +208,22 @@ class MainActivity : ComponentActivity() {
         fun rememberActivationState(): ActivationState {
             val xposedService by HookStatus.xposedService.collectAsState()
             val isHookEnabled = remember(xposedService) {
-                xposedService?.scope?.contains(PackageNames.WECHAT) == true
+                HookStatus.isActivated(this)
             }
+            val service = xposedService
 
-            return remember(isHookEnabled, xposedService) {
+            return remember(isHookEnabled, service) {
                 ActivationState(
                     isActivated = isHookEnabled,
                     title = if (isHookEnabled) "已激活" else "未激活",
-                    desc = xposedService?.let {
-                        "${it.frameworkName} ${it.frameworkVersion} " +
-                                "(${it.frameworkVersionCode}), API ${it.apiVersion}"
-                    } ?: "未检测到 Xposed 框架, 请确认已在管理器中启用模块并勾选微信",
+                    desc = if (service != null) {
+                        "${service.frameworkName} ${service.frameworkVersion} " +
+                                "(${service.frameworkVersionCode}), API ${service.apiVersion}"
+                    } else if (isHookEnabled) {
+                        "Xposed 框架已注入（分身环境，状态检测受限）"
+                    } else {
+                        "未检测到 Xposed 框架, 请确认已在管理器中启用模块并勾选微信"
+                    },
                     color = if (isHookEnabled) Color(0xFF4CAF50) else Color(0xFFF44336)
                 )
             }
