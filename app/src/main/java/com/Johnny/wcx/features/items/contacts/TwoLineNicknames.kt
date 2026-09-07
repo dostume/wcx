@@ -1,11 +1,11 @@
 package com.Johnny.wcx.features.items.contacts
 
 import android.app.Activity
-import android.content.Context
-import android.content.ContextWrapper
+import android.app.Application
+import android.os.Bundle
 import android.text.TextUtils
 import android.view.View
-import android.view.ViewGroup
+import android.widget.EditText
 import android.widget.TextView
 import de.robv.android.xposed.XC_MethodHook
 import dev.ujhhgtg.reflekt.reflekt
@@ -13,6 +13,7 @@ import com.Johnny.wcx.features.api.ui.WeChatMessageViewApi
 import com.Johnny.wcx.features.api.ui.WeConversationListViewApi
 import com.Johnny.wcx.features.core.Feature
 import com.Johnny.wcx.features.core.SwitchFeature
+import com.Johnny.wcx.ui.utils.allViews
 import com.Johnny.wcx.utils.HostInfo
 import com.Johnny.wcx.utils.WeLogger
 
@@ -21,14 +22,18 @@ import com.Johnny.wcx.utils.WeLogger
  *
  * 聊天页群成员昵称、会话列表标题、通讯录联系人昵称过长时双行显示，不再单行截断。
  *
- * 覆盖三个界面：
- *  1. 聊天页 userTV：共享样式 maxWidth=240dp 单行硬裁剪 → 解除宽度上限 + 双行
- *  2. 会话列表标题：单行省略 → 双行
- *  3. 通讯录等联系人列表（MvvmList 机制，行由 WeChat 内部渲染）：
- *     通过 TextView.onAttachedToWindow 全局 hook + 页面包名过滤实现，
- *     每个新 attach 的 TextView 若处于联系人相关页面且字号达到标题档（>=17sp）则放开为两行
+ * 三路覆盖（互相兜底, 幂等）：
+ *  1. 全局 TextView.onAttachedToWindow hook（主力）：每个新出现的单行大字号 TextView
+ *     放开为两行。不按页面/Activity 过滤 —— 8.0.76 通讯录是 LauncherUI 内的
+ *     MvvmAddressUIFragment, 没有"通讯录 Activity"可匹配, 按属性过滤才能覆盖所有列表。
+ *  2. ActivityLifecycleCallbacks + decorView 清扫：每次页面切换（onResume）后遍历
+ *     当前页存量单行 TextView。解决"开启开关后已渲染的行不重新 attach, 不重启微信
+ *     不生效"的问题。
+ *  3. 聊天页/会话列表 API listener（精确兜底）：行复用重新 bind 时若 adapter 重置了
+ *     maxLines, 在 bind 时机重新应用；聊天页 userTV 额外解除 240dp 宽度硬上限。
  *
- * 短昵称完全不受影响（文本不超一行时 TextView 不会凭空换行）。
+ * 启发式安全性：maxLines=2 只对"单行超宽被截断"的文本产生视觉变化（这正是需求），
+ * 短文本不超一行永远不会凭空换行, 因此无需担心误伤按钮/时间戳等短文本控件。
  */
 @Feature(
     name = "长昵称双行显示",
@@ -41,13 +46,10 @@ object TwoLineNicknames : SwitchFeature(),
 
     private const val TAG = "TwoLineNicknames"
 
-    /** 通讯录等联系人列表页面的 Activity 类名前缀（onAttachedToWindow 过滤用） */
-    private val CONTACTS_ACTIVITY_PREFIXES = arrayOf(
-        "com.tencent.mm.ui.contact",      // 通讯录主页 / 联系人详情
-        "com.tencent.mm.ui.chatting.atsomeone", // @成员选择器
-    )
-
-    /** 标题档字号阈值（px）；标题 17sp 明显大于摘要 13sp/时间 12sp */
+    /**
+     * 昵称/标题档字号阈值（px）。标题与昵称约 17sp, 摘要/时间约 13sp,
+     * 按钮与辅助文本 <=15sp —— 取 16sp 只命中标题档。
+     */
     private val titleTextSizeThresholdPx: Float
         get() = 16f * HostInfo.application.resources.displayMetrics.density
 
@@ -55,24 +57,50 @@ object TwoLineNicknames : SwitchFeature(),
         java.util.WeakHashMap<View, Boolean>()
     )
 
-    // ── 聊天页：群成员昵称（气泡上方）双行 ─────────────────────────────
+    /** 记录处理前的 ellipsize, 关闭功能时恢复原状 */
+    private val originalEllipsizes = java.util.WeakHashMap<TextView, TextUtils.TruncateAt?>()
+
+    private var lifecycleRegistered = false
+
+    private val lifecycleCallbacks = object : Application.ActivityLifecycleCallbacks {
+        override fun onActivityResumed(activity: Activity) {
+            // 页面切换后清扫存量单行 TextView（幂等）;
+            // post 等一帧, 保证新页面的视图已完成 inflate/attach。
+            activity.window?.decorView?.post { sweepExistingViews(activity) }
+        }
+
+        override fun onActivityDestroyed(activity: Activity) {}
+        override fun onActivityStarted(activity: Activity) {}
+        override fun onActivityPaused(activity: Activity) {}
+        override fun onActivityStopped(activity: Activity) {}
+        override fun onActivitySaveInstanceState(activity: Activity, outState: Bundle) {}
+        override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) {}
+    }
+
+    // ── 聊天页：群成员昵称（气泡上方）双行 + 解除 240dp 上限 ─────────────
 
     override fun onCreateView(param: XC_MethodHook.MethodHookParam, view: View) {
-        val msgInfo = WeChatMessageViewApi.getMsgInfoFromParam(param)
-        if (!msgInfo.isInGroupChat) return
+        val msgInfo = runCatching { WeChatMessageViewApi.getMsgInfoFromParam(param) }.getOrNull()
+        if (msgInfo?.isInGroupChat != true) return
         if (msgInfo.isSend != 0) return
 
         // userTV 位于消息视图 tag 持有的 ViewHolder；防御性获取, tag 结构异常时静默跳过
         val textView = runCatching {
             view.tag.reflekt()
                 .firstFieldOrNull { name = "userTV"; superclass() }?.get() as? TextView
-        }.getOrNull() ?: return
+        }.getOrNull()
+
+        if (textView == null) {
+            // 诊断：确认 hook 已触发, 只是此版本 ViewHolder 结构不同
+            WeLogger.d(TAG, "chat msg bound but no userTV found (holder=${view.tag?.javaClass?.simpleName})")
+            return
+        }
 
         applyTwoLine(textView, removeWidthCap = true)
         WeLogger.d(TAG, "chat userTV two-line applied: \"${textView.text?.take(20)}\"")
     }
 
-    // ── 会话列表：标题双行 ───────────────────────────────────────────
+    // ── 会话列表：行复用 bind 时兜底（adapter 可能重置 maxLines）────────
 
     override fun onBind(
         param: XC_MethodHook.MethodHookParam,
@@ -80,62 +108,112 @@ object TwoLineNicknames : SwitchFeature(),
         conversation: Any,
         context: WeConversationListViewApi.BindContext,
     ) {
-        // 行内字号最大的 TextView 即标题（摘要与时间字号更小）。
-        // 即使个别版本启发式选错, 被误选的控件文本都很短（时间/计数）,
-        // 设置 maxLines=2 不会产生任何视觉变化, 副作用为零。
-        val title = largestTextView(row) ?: return
-        applyTwoLine(title, removeWidthCap = false)
+        // 与全局 hook 相同的属性启发式, 在 bind 时机重新应用（幂等）
+        for (v in row.allViews) {
+            if (v is TextView && isTitleLikeSingleLine(v)) {
+                applyTwoLine(v, removeWidthCap = false)
+            }
+        }
     }
 
-    // ── 通讯录 / @成员选择器：联系人昵称双行 ──────────────────────────
+    // ── 全局主力：TextView attach hook ─────────────────────────────────
 
     /**
-     * 全局 TextView attach hook。联系人列表行由微信内部 MvvmList 渲染、
-     * 没有公开的 bind 回调, 借助 attach 时机在每个新行出现的瞬间处理。
-     * 页面过滤放在最前, 非联系人页面的 TextView 直接返回, 开销可忽略。
+     * 每个新 attach 的 TextView 若是"单行 + 大字号"（昵称/标题档）则放开为两行。
+     * 短文本不受任何影响; 长文本双行显示正是本功能目标。
      */
-    private fun installContactsListHook() {
+    private fun installGlobalAttachHook() {
         runCatching {
             TextView::class.reflekt()
                 .firstMethod { name = "onAttachedToWindow" }
                 .hookAfter {
                     val tv = thisObject as? TextView ?: return@hookAfter
-                    if (tv in appliedViews) return@hookAfter
-
-                    val activity = tv.context.findActivity() ?: return@hookAfter
-                    val className = activity.javaClass.name
-                    val inContactsPage = CONTACTS_ACTIVITY_PREFIXES.any { className.startsWith(it) }
-                    if (!inContactsPage) return@hookAfter
-
-                    // 只处理标题档字号的 TextView（昵称）, 摘要/字母索引等小字号跳过
-                    if (tv.textSize < titleTextSizeThresholdPx) return@hookAfter
-                    if (tv.text.isNullOrEmpty()) return@hookAfter
-
-                    appliedViews.add(tv)
-                    applyTwoLine(tv, removeWidthCap = false)
-                    WeLogger.d(TAG, "contacts row two-line applied in $className: \"${tv.text?.take(20)}\"")
+                    if (isTitleLikeSingleLine(tv)) {
+                        applyTwoLine(tv, removeWidthCap = false)
+                        WeLogger.d(TAG, "attach two-line applied in ${tv.context.javaClass.name.take(40)}: \"${tv.text?.take(20)}\"")
+                    }
                 }
         }.onFailure {
-            WeLogger.w(TAG, "failed to hook TextView.onAttachedToWindow for contacts list", it)
+            WeLogger.w(TAG, "failed to hook TextView.onAttachedToWindow", it)
+            return
+        }
+        WeLogger.i(TAG, "global TextView attach hook installed")
+    }
+
+    /** 属性启发式：单行 + 标题档字号的 TextView 视为昵称/标题 */
+    private fun isTitleLikeSingleLine(tv: TextView): Boolean {
+        if (tv in appliedViews) return false
+        if (tv is EditText) return false
+        if (tv.maxLines != 1) return false
+        if (tv.textSize < titleTextSizeThresholdPx) return false
+        return true
+    }
+
+    /** 遍历 Activity 全部视图, 对符合条件的存量 TextView 应用双行（幂等） */
+    private fun sweepExistingViews(activity: Activity) {
+        if (!isEnabled) return
+        runCatching {
+            var applied = 0
+            activity.window?.decorView?.let { root ->
+                for (v in root.allViews) {
+                    if (v is TextView && isTitleLikeSingleLine(v)) {
+                        applyTwoLine(v, removeWidthCap = false)
+                        applied++
+                    }
+                }
+            }
+            if (applied > 0) {
+                WeLogger.d(TAG, "sweep on ${activity.javaClass.simpleName}: applied $applied existing TextView(s)")
+            }
         }
     }
 
-    // ── 生命周期 ─────────────────────────────────────────────────────
+    // ── 生命周期 ─────────────────────────────────────────────────────────
 
     override fun onEnable() {
         WeChatMessageViewApi.addListener(this)
         WeConversationListViewApi.addListener(this)
-        installContactsListHook()
+        installGlobalAttachHook()
+
+        // 监听页面切换, 每次 onResume 清扫存量 —— 开关打开后无需重启微信,
+        // 返回微信任意页面即生效。
+        runCatching {
+            HostInfo.application.registerActivityLifecycleCallbacks(lifecycleCallbacks)
+            lifecycleRegistered = true
+        }.onFailure {
+            WeLogger.w(TAG, "failed to register lifecycle callbacks (sweep disabled)", it)
+        }
+        WeLogger.i(TAG, "enabled: attach hook + lifecycle sweep + chat/conversation listeners")
     }
 
     override fun onDisable() {
         WeChatMessageViewApi.removeListener(this)
         WeConversationListViewApi.removeListener(this)
+        if (lifecycleRegistered) {
+            runCatching { HostInfo.application.unregisterActivityLifecycleCallbacks(lifecycleCallbacks) }
+            lifecycleRegistered = false
+        }
+
+        // 恢复已处理 TextView 的原状态
+        for (view in appliedViews.toList()) {
+            val tv = view as? TextView ?: continue
+            runCatching {
+                tv.maxLines = 1
+                tv.ellipsize = originalEllipsizes[tv]
+                tv.requestLayout()
+            }
+        }
+        appliedViews.clear()
+        originalEllipsizes.clear()
     }
 
-    // ── 实现 ─────────────────────────────────────────────────────────
+    // ── 实现 ─────────────────────────────────────────────────────────────
 
     private fun applyTwoLine(tv: TextView, removeWidthCap: Boolean) {
+        if (tv !in appliedViews) {
+            originalEllipsizes[tv] = tv.ellipsize
+            appliedViews.add(tv)
+        }
         // setSingleLine(false) 先解除单行约束（含水平滚动模式）,
         // 再显式设 2 行, 避免依赖 setSingleLine 内部对 maxLines 的副作用顺序
         tv.setSingleLine(false)
@@ -147,27 +225,5 @@ object TwoLineNicknames : SwitchFeature(),
         // 修改 maxLines 后强制重新布局, 确保已显示的行立即生效
         tv.requestLayout()
         tv.invalidate()
-    }
-
-    /** 深度优先遍历行视图树, 返回 textSize 最大的 TextView（即标题） */
-    private fun largestTextView(view: View): TextView? {
-        if (view is TextView) return view
-        if (view !is ViewGroup) return null
-
-        var best: TextView? = null
-        for (i in 0 until view.childCount) {
-            val candidate = largestTextView(view.getChildAt(i)) ?: continue
-            if (best == null || candidate.textSize > best.textSize) best = candidate
-        }
-        return best
-    }
-
-    private fun Context.findActivity(): Activity? {
-        var current: Context? = this
-        while (current is ContextWrapper) {
-            if (current is Activity) return current
-            current = current.baseContext
-        }
-        return null
     }
 }
