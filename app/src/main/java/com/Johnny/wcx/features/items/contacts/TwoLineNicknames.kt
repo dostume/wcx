@@ -2,6 +2,8 @@ package com.Johnny.wcx.features.items.contacts
 
 import android.app.Activity
 import android.app.Application
+import android.content.ContextWrapper
+import android.os.Build
 import android.os.Bundle
 import android.text.TextUtils
 import android.view.View
@@ -215,15 +217,29 @@ object TwoLineNicknames : SwitchFeature(),
             originalEllipsizes[tv] = tv.ellipsize
             appliedViews.add(tv)
         }
-        // setSingleLine(false) 先解除单行约束（含水平滚动模式）,
-        // 再显式设 2 行, 避免依赖 setSingleLine 内部对 maxLines 的副作用顺序
+        // 标准 TextView：解除单行约束 → 显式设两行
         tv.setSingleLine(false)
         tv.maxLines = 2
         tv.ellipsize = TextUtils.TruncateAt.END
+
+        // 微信自绘 NoMeasuredTextView 会忽略 maxLines，直接反射写私有字段 mMaxMode=2；
+        // 字段名跨版本稳定（从 8.0.x 沿用至今），Build.VERSION.SDK_INT 检查防 NPE。
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            runCatching {
+                val mMaxMode = tv.javaClass.getDeclaredField("mMaxMode").apply { isAccessible = true }
+                val mMaximum = tv.javaClass.getDeclaredField("mMaximum").apply { isAccessible = true }
+                mMaxMode.setInt(tv, 2)       // 2 == MAX_LINES
+                mMaximum.setInt(tv, 2)
+            }.onFailure {
+                // 该版本字段名不同（罕见情况），退回到标准路径已足够
+                WeLogger.d(TAG, "NoMeasuredTextView field hack failed (non-fatal): ${it.message}")
+            }
+        }
+
         // 聊天页 userTV 的共享样式带 240dp 硬上限, 解除后由父布局约束实际宽度;
         // 列表标题保留原有 maxWidth（防止挤占右侧时间戳）, 仅放开行数
         if (removeWidthCap) tv.maxWidth = Int.MAX_VALUE
-        // 修改 maxLines 后强制重新布局, 确保已显示的行立即生效
+        // 修改后强制重新布局 + 重绘, 确保已显示的行立即生效
         tv.requestLayout()
         tv.invalidate()
     }
