@@ -578,7 +578,7 @@ object HideContacts : ClickableFeature(), IResolveDex, WeChatInputBarApi.IInputB
                                 title = "配置隐藏列表",
                                 description = "点击配置联系人隐藏列表",
                                 onClick = {
-                                showComposeDialog(context) {
+                                showComposeDialog(context, fullScreen = true) {
                                     ContactsSelector(
                                         title = ("选择要隐藏的联系人"),
                                         contacts = regularContacts,

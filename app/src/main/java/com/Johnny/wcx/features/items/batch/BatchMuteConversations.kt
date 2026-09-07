@@ -1,6 +1,5 @@
 package com.Johnny.wcx.features.items.batch
 
-import android.app.Activity
 import android.content.Context
 import androidx.activity.ComponentActivity
 import androidx.compose.foundation.clickable
@@ -9,7 +8,6 @@ import androidx.compose.material3.Text
 import androidx.compose.ui.Modifier
 import com.Johnny.wcx.features.api.core.WeConversationApi
 import com.Johnny.wcx.features.api.core.WeDatabaseApi
-import com.Johnny.wcx.features.api.ui.WeNativePickerBridge
 import com.Johnny.wcx.features.core.ClickableFeature
 import com.Johnny.wcx.features.core.Feature
 import com.Johnny.wcx.ui.content.AlertDialogContent
@@ -69,25 +67,7 @@ object BatchMuteConversations : ClickableFeature() {
     private fun pickAndApply(context: Context, mute: Boolean) {
         val contacts = WeDatabaseApi.getFriends() + WeDatabaseApi.getGroups()
 
-        // 优先唤起微信原版多选页; 不可用时降级自绘选择器
-        val launched = WeNativePickerBridge.launch(
-            activity = context as? Activity
-                ?: return showToast("无法获取 Activity"),
-            options = WeNativePickerBridge.Options(
-                title = if (mute) "选择要静音的对话" else "选择要取消静音的对话",
-                multiSelect = true,
-            ),
-            onResult = { wxIds ->
-                if (wxIds.isEmpty()) {
-                    WeNativePickerBridge.toastEmptySelection()
-                    return@launch
-                }
-                apply(wxIds.toSet(), mute)
-            }
-        )
-        if (launched) return
-
-        showComposeDialog(context) {
+        showComposeDialog(context, fullScreen = true) {
             ContactsSelector(
                 title = if (mute) "选择要静音的对话" else "选择要取消静音的对话",
                 contacts = contacts,

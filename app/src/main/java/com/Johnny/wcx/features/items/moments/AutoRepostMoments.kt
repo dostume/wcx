@@ -115,7 +115,7 @@ object AutoRepostMoments : AutoMomentsBase(),
                                 val regularContacts = WeDatabaseApi.getFriends() + WeDatabaseApi.getGroups()
                                 val currentList = if (useWhitelist) momentsWhitelist else momentsBlacklist
 
-                                showComposeDialog(context) {
+                                showComposeDialog(context, fullScreen = true) {
                                     ContactsSelector(
                                         title = if (useWhitelist) "选择白名单" else "选择黑名单",
                                         contacts = regularContacts,

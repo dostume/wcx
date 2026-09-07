@@ -190,7 +190,7 @@ object AutoAcceptTransfers : ClickableFeature(), WeDatabaseListenerApi.IInsertLi
                                 val regularContacts = WeDatabaseApi.getFriends() + WeDatabaseApi.getGroups()
                                 val currentList = if (useWhitelist) transferWhitelist else transferBlacklist
 
-                                showComposeDialog(context) {
+                                showComposeDialog(context, fullScreen = true) {
                                     ContactsSelector(
                                         title = if (useWhitelist) "选择白名单" else "选择黑名单",
                                         contacts = regularContacts,

@@ -23,6 +23,7 @@ import androidx.compose.ui.unit.dp
 @Composable
 fun AlertDialogContent(
     modifier: Modifier = Modifier,
+    fullScreen: Boolean = false,
     icon: @Composable (() -> Unit)? = null,
     title: @Composable (() -> Unit)?,
     text: @Composable (() -> Unit)?,
@@ -30,14 +31,14 @@ fun AlertDialogContent(
     dismissButton: (@Composable () -> Unit)? = null
 ) {
     Surface(
-        shape = MaterialTheme.shapes.extraLarge,
+        shape = if (fullScreen) MaterialTheme.shapes.small else MaterialTheme.shapes.extraLarge,
         tonalElevation = 6.dp,
         modifier = modifier
             .fillMaxWidth()
             .wrapContentHeight()
     ) {
         Column(
-            modifier = Modifier.padding(20.dp),
+            modifier = Modifier.padding(if (fullScreen) 12.dp else 20.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             Row(
@@ -71,7 +72,7 @@ fun AlertDialogContent(
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .heightIn(max = 400.dp)
+                        .heightIn(max = if (fullScreen) 4000.dp else 400.dp)
                 ) {
                     CompositionLocalProvider(
                         LocalTextStyle provides bodyStyle,

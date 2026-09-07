@@ -4,8 +4,10 @@ import android.app.Dialog
 import android.content.Context
 import android.graphics.Color
 import android.view.View
+import android.view.ViewGroup
 import android.view.Window
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -27,6 +29,7 @@ import com.Johnny.wcx.ui.utils.theme.ModuleTheme
 fun showComposeDialog(
     context: Context,
     directlyDismissable: Boolean = true,
+    fullScreen: Boolean = false,
     content: @Composable ShowComposeDialogScope.() -> Unit
 ) {
     val context = CommonContextWrapper(context)
@@ -41,6 +44,13 @@ fun showComposeDialog(
         window!!.apply {
             setBackgroundDrawableResource(android.R.color.transparent)
             requestFeature(Window.FEATURE_NO_TITLE)
+            if (fullScreen) {
+                // 铺满全屏: 窗口尺寸匹配父容器, 解除平台 Dialog 的默认尺寸约束
+                setLayout(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT
+                )
+            }
         }
 
         setCancelable(directlyDismissable)
@@ -62,7 +72,11 @@ fun showComposeDialog(
                     CompositionLocalProvider(LocalContext provides context) {
                         ModuleTheme {
                             Box(
-                                modifier = Modifier.wrapContentSize(),
+                                modifier = if (fullScreen) {
+                                    Modifier.fillMaxSize()
+                                } else {
+                                    Modifier.wrapContentSize()
+                                },
                                 contentAlignment = Alignment.Center
                             ) {
                                 scope.content()

@@ -324,11 +324,6 @@ fun SettingsPager(onOpenLicense: () -> Unit, onOpenAcknowledgements: () -> Unit)
                     summary = "dostume/wcx",
                     icon = GitHubIcon,
                     onClick = { "https://github.com/dostume/wcx".toUri().openInSystem(context, true) })
-                PrefArrow(
-                    title = "TG 群组",
-                    summary = "@wcx12138",
-                    icon = MaterialSymbols.Outlined.Send,
-                    onClick = { "https://t.me/wcx12138".toUri().openInSystem(context, true) })
             }
         }
 

@@ -20,7 +20,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import com.Johnny.wcx.features.api.core.WeContactLabelApi
 import com.Johnny.wcx.features.api.core.WeDatabaseApi
-import com.Johnny.wcx.features.api.ui.WeNativePickerBridge
 import com.Johnny.wcx.features.core.ClickableFeature
 import com.Johnny.wcx.features.core.Feature
 import com.Johnny.wcx.ui.content.AlertDialogContent
@@ -55,26 +54,7 @@ object BatchAddLabel : ClickableFeature() {
     override fun onClick(context: ComponentActivity) {
         val friends = WeDatabaseApi.getFriends()
 
-        // 优先唤起微信原版多选页(仅好友); 不可用时降级自绘选择器
-        val launched = WeNativePickerBridge.launch(
-            activity = context,
-            options = WeNativePickerBridge.Options(
-                title = "选择要打标签的好友",
-                multiSelect = true,
-                allowChatrooms = false,
-                allowOfficialAccounts = false,
-            ),
-            onResult = { wxIds ->
-                if (wxIds.isEmpty()) {
-                    WeNativePickerBridge.toastEmptySelection()
-                    return@launch
-                }
-                pickLabelAndApply(context, wxIds.toSet())
-            }
-        )
-        if (launched) return
-
-        showComposeDialog(context) {
+        showComposeDialog(context, fullScreen = true) {
             ContactsSelector(
                 title = "选择要打标签的好友",
                 contacts = friends,

@@ -155,7 +155,7 @@ object ChatInputBarEnhancements : SwitchFeature(), IResolveDex {
 //                                                return@ActionItem
 //                                            }
 //
-//                                            showComposeDialog(context) {
+//                                            showComposeDialog(context, fullScreen = true) {
 //                                                ContactsSelector(
 //                                                    title = "选择要@的好友",
 //                                                    contacts = WeDatabaseApi.getGroupMembers(WeCurrentConversationApi.value),

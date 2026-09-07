@@ -1519,7 +1519,7 @@ object ConversationAggregation : ClickableFeature(),
                                 Button(
                                     modifier = Modifier.weight(1f),
                                     onClick = {
-                                        showComposeDialog(context) {
+                                        showComposeDialog(context, fullScreen = true) {
                                             ContactsSelector(
                                                 title = "选择对话",
                                                 contacts = remember { WeDatabaseApi.getContacts() },

@@ -100,7 +100,7 @@ jobs:
         if: steps.merge.outputs.changed == 'true' || github.event_name != 'schedule' || inputs.force_release == true
         env:
           # 与下方 Publish 步骤的 tag 同源, 写入 APK 的 BuildConfig.RELEASE_TAG
-          WCX_RELEASE_TAG: auto-${{ steps.upstream.outputs.sha }}
+          WCX_RELEASE_TAG: v247
         run: |
           ./gradlew --no-daemon assembleRelease
 
@@ -113,17 +113,17 @@ jobs:
           if-no-files-found: error
 
       - name: Publish APKs to Release
-        # 上游有更新 (或手动强制) 时发布 Release, tag 用上游短 SHA;
-        # 同一上游版本重复发布会更新既有 Release, 不会堆积重复项
+        # 上游有更新 (或手动强制) 时发布 Release, tag 固定 v247 (应用 versionCode),
+        # 重复发布会更新既有 Release, 不会堆积重复项
         if: steps.merge.outputs.changed == 'true' || inputs.force_release == true
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: auto-${{ steps.upstream.outputs.sha }}
-          name: Auto Sync ${{ steps.upstream.outputs.sha }}
+          tag_name: v247
+          name: v247
           body: |
-            自动同步上游 Johnny520/wcx @ ${{ steps.upstream.outputs.sha }} 后构建。
+            自动同步上游 Johnny520/wcx 后构建。
 
-            包含本仓库全部改动 (定时发送 777026 / 取消定时发送 777027 等)。
+            包含本仓库全部改动 (定时发送 777026 / 取消定时发送 777027 / 自定义通知铃声 等)。
 
             附件 4 个 APK: standard/legacy × arm64-v8a/armeabi-v7a,
             正式签名, 可直接覆盖安装。推荐 app-standard-arm64-v8a-release.apk。

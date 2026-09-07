@@ -493,6 +493,7 @@ fun BaseContactSelector(
         modifier = modifier
             .fillMaxWidth()
             .fillMaxHeight(),
+        fullScreen = true,
         title = { Text(title) },
         text = {
             Column(modifier = Modifier.fillMaxSize()) {

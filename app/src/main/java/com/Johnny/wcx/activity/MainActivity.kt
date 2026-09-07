@@ -690,13 +690,6 @@ class MainActivity : ComponentActivity() {
                 )
 
                 LinkCard(
-                    icon = MaterialSymbols.Outlined.Chat,
-                    title = "交流群组",
-                    subtitle = "https://t.me/wcx12138",
-                    onClick = { onUrlClick("https://t.me/wcx12138") }
-                )
-
-                LinkCard(
                     icon = GitHubIcon,
                     title = "GitHub",
                     subtitle = "dostume/wcx",

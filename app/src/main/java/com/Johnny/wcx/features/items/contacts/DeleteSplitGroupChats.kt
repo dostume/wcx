@@ -33,7 +33,7 @@ object DeleteSplitGroupChats : ClickableFeature() {
             return
         }
 
-        showComposeDialog(context) {
+        showComposeDialog(context, fullScreen = true) {
             ContactsSelector(
                 title = "删除假群组 (共 ${fakeGroups.size} 个)",
                 contacts = fakeGroups,

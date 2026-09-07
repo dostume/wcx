@@ -158,7 +158,7 @@ object MentionMembers : SwitchFeature(), IResolveDex {
                         return@ActionItem
                     }
 
-                    showComposeDialog(context) {
+                    showComposeDialog(context, fullScreen = true) {
                         val dialogContext = LocalContext.current
                         val localizedContext = LocalContext.current
                         ContactsSelector(

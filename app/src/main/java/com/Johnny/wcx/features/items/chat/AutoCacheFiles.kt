@@ -162,7 +162,7 @@ object AutoCacheFiles : ClickableFeature(),
                                 val contacts = WeDatabaseApi.getFriends() + WeDatabaseApi.getGroups()
                                 val currentList = if (useWhitelistState) whitelist else blacklist
 
-                                showComposeDialog(context) {
+                                showComposeDialog(context, fullScreen = true) {
                                     ContactsSelector(
                                         title = if (useWhitelistState) "选择白名单" else "选择黑名单",
                                         contacts = contacts,

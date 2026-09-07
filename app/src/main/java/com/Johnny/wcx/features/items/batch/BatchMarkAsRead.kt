@@ -3,7 +3,6 @@ package com.Johnny.wcx.features.items.batch
 import androidx.activity.ComponentActivity
 import com.Johnny.wcx.features.api.core.WeConversationApi
 import com.Johnny.wcx.features.api.core.WeDatabaseApi
-import com.Johnny.wcx.features.api.ui.WeNativePickerBridge
 import com.Johnny.wcx.features.core.ClickableFeature
 import com.Johnny.wcx.features.core.Feature
 import com.Johnny.wcx.ui.content.ContactsSelector
@@ -27,27 +26,9 @@ object BatchMarkAsRead : ClickableFeature() {
     override val noSwitchWidget = true
 
     override fun onClick(context: ComponentActivity) {
-        // 优先唤起微信原版多选页; 页面不可用时降级自绘选择器
-        val launched = WeNativePickerBridge.launch(
-            activity = context,
-            options = WeNativePickerBridge.Options(
-                title = "选择要标为已读的对话",
-                multiSelect = true,
-                allowOfficialAccounts = false,
-            ),
-            onResult = { wxIds ->
-                if (wxIds.isEmpty()) {
-                    WeNativePickerBridge.toastEmptySelection()
-                    return@launch
-                }
-                markAsRead(wxIds.toSet())
-            }
-        )
-        if (launched) return
-
         val contacts = WeDatabaseApi.getFriends() + WeDatabaseApi.getGroups()
 
-        showComposeDialog(context) {
+        showComposeDialog(context, fullScreen = true) {
             ContactsSelector(
                 title = "选择要标为已读的对话",
                 contacts = contacts,

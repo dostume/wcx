@@ -42,8 +42,8 @@ android {
     val gitHash = getGitHash()
 
     // CI 发布时由 Sync Upstream & Build APK 工作流注入本次将发布的 Release tag
-    // (auto-<上游短SHA>), 写入 BuildConfig.RELEASE_TAG 供 AppUpdater 判等,
-    // 避免 auto-* 发布命名下每次启动都误报新版本。本地构建为空字符串。
+    // (固定 v247), 写入 BuildConfig.RELEASE_TAG 供 AppUpdater 判等,
+    // 避免重复发布时每次启动都误报新版本。本地构建为空字符串。
     val ciReleaseTag = providers.environmentVariable("WCX_RELEASE_TAG").orElse("").get()
 
     // v194 基线：commitCount 基于 v148，偏移 +26
