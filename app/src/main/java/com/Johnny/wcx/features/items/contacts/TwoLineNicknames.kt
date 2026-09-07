@@ -2,8 +2,6 @@ package com.Johnny.wcx.features.items.contacts
 
 import android.app.Activity
 import android.app.Application
-import android.content.ContextWrapper
-import android.os.Build
 import android.os.Bundle
 import android.text.TextUtils
 import android.view.View
@@ -12,7 +10,6 @@ import android.widget.TextView
 import de.robv.android.xposed.XC_MethodHook
 import dev.ujhhgtg.reflekt.reflekt
 import com.Johnny.wcx.features.api.ui.WeChatMessageViewApi
-import com.Johnny.wcx.features.api.ui.WeConversationListViewApi
 import com.Johnny.wcx.features.core.Feature
 import com.Johnny.wcx.features.core.SwitchFeature
 import com.Johnny.wcx.ui.utils.allViews
@@ -22,20 +19,14 @@ import com.Johnny.wcx.utils.WeLogger
 /**
  * 长昵称双行显示
  *
- * 聊天页群成员昵称、会话列表标题、通讯录联系人昵称过长时双行显示，不再单行截断。
- *
  * 三路覆盖（互相兜底, 幂等）：
- *  1. 全局 TextView.onAttachedToWindow hook（主力）：每个新出现的单行大字号 TextView
- *     放开为两行。不按页面/Activity 过滤 —— 8.0.76 通讯录是 LauncherUI 内的
- *     MvvmAddressUIFragment, 没有"通讯录 Activity"可匹配, 按属性过滤才能覆盖所有列表。
- *  2. ActivityLifecycleCallbacks + decorView 清扫：每次页面切换（onResume）后遍历
- *     当前页存量单行 TextView。解决"开启开关后已渲染的行不重新 attach, 不重启微信
- *     不生效"的问题。
- *  3. 聊天页/会话列表 API listener（精确兜底）：行复用重新 bind 时若 adapter 重置了
- *     maxLines, 在 bind 时机重新应用；聊天页 userTV 额外解除 240dp 宽度硬上限。
- *
- * 启发式安全性：maxLines=2 只对"单行超宽被截断"的文本产生视觉变化（这正是需求），
- * 短文本不超一行永远不会凭空换行, 因此无需担心误伤按钮/时间戳等短文本控件。
+ *  1. WeChatMessageViewApi.onCreateView（聊天页群成员昵称）：通过成熟API获取完整msgInfo，
+ *     精确定位userTV，解除单行约束+240dp宽度上限+NoMeasuredTextView字段hack。
+ *  2. 全局TextView.onAttachedToWindow hook（联系人页/会话列表）：
+ *     单行+字号≥12sp即放开为两行；12sp阈值覆盖会话列表标题(~15sp)与底部标签(~10sp)。
+ *     短文本不超一行永远不换行，无副作用。
+ *  3. ActivityLifecycleCallbacks + decorView清扫（存量视图即时生效）：
+ *     开启功能后无需重启微信，返回任意页面即生效。
  */
 @Feature(
     name = "长昵称双行显示",
@@ -43,18 +34,17 @@ import com.Johnny.wcx.utils.WeLogger
     description = "聊天页群成员昵称、会话列表与通讯录联系人昵称过长时双行显示, 不再单行截断; 同时解除群昵称 240dp 宽度限制"
 )
 object TwoLineNicknames : SwitchFeature(),
-    WeChatMessageViewApi.ICreateViewListener,
-    WeConversationListViewApi.IBindViewListener {
+    WeChatMessageViewApi.ICreateViewListener {
 
     private const val TAG = "TwoLineNicknames"
 
     /**
-     * 昵称/标题档字号阈值（px）。会话列表标题约 15sp、聊天页/联系人昵称约 17sp,
-     * 而会话摘要/时间约 13sp、底部标签页约 10sp —— 取 14sp 覆盖全部标题档并
-     * 排除摘要档（与 Themes 主/次文本 13sp 分界一致）。
+     * 昵称/标题档字号阈值（px）。
+     * 8.0.76实测: 底部标签~10sp, 会话摘要~13sp, 会话标题~15sp, 联系人昵称~17sp。
+     * 取12sp覆盖全部标题档并排除摘要档（与Themes主/次文本13sp分界对齐）。
      */
     private val titleTextSizeThresholdPx: Float
-        get() = 14f * HostInfo.application.resources.displayMetrics.density
+        get() = 12f * HostInfo.application.resources.displayMetrics.density
 
     private val appliedViews = java.util.Collections.newSetFromMap(
         java.util.WeakHashMap<View, Boolean>()
@@ -87,15 +77,14 @@ object TwoLineNicknames : SwitchFeature(),
         if (msgInfo?.isInGroupChat != true) return
         if (msgInfo.isSend != 0) return
 
-        // userTV 位于消息视图 tag 持有的 ViewHolder；防御性获取, tag 结构异常时静默跳过
+        // userTV 位于消息视图 tag 持有的 ViewHolder
         val textView = runCatching {
             view.tag.reflekt()
                 .firstFieldOrNull { name = "userTV"; superclass() }?.get() as? TextView
         }.getOrNull()
 
         if (textView == null) {
-            // 诊断：确认 hook 已触发, 只是此版本 ViewHolder 结构不同
-            WeLogger.d(TAG, "chat msg bound but no userTV found (holder=${view.tag?.javaClass?.simpleName})")
+            WeLogger.d(TAG, "chat msg bound but no userTV found")
             return
         }
 
@@ -103,28 +92,8 @@ object TwoLineNicknames : SwitchFeature(),
         WeLogger.d(TAG, "chat userTV two-line applied: \"${textView.text?.take(20)}\"")
     }
 
-    // ── 会话列表：行复用 bind 时兜底（adapter 可能重置 maxLines）────────
-
-    override fun onBind(
-        param: XC_MethodHook.MethodHookParam,
-        row: View,
-        conversation: Any,
-        context: WeConversationListViewApi.BindContext,
-    ) {
-        // 与全局 hook 相同的属性启发式, 在 bind 时机重新应用（幂等）
-        for (v in row.allViews) {
-            if (v is TextView && isTitleLikeSingleLine(v)) {
-                applyTwoLine(v, removeWidthCap = false)
-            }
-        }
-    }
-
     // ── 全局主力：TextView attach hook ─────────────────────────────────
 
-    /**
-     * 每个新 attach 的 TextView 若是"单行 + 大字号"（昵称/标题档）则放开为两行。
-     * 短文本不受任何影响; 长文本双行显示正是本功能目标。
-     */
     private fun installGlobalAttachHook() {
         runCatching {
             TextView::class.reflekt()
@@ -133,14 +102,14 @@ object TwoLineNicknames : SwitchFeature(),
                     val tv = thisObject as? TextView ?: return@hookAfter
                     if (isTitleLikeSingleLine(tv)) {
                         applyTwoLine(tv, removeWidthCap = false)
-                        WeLogger.d(TAG, "attach two-line applied: \"${tv.text?.take(20)}\"")
+                        WeLogger.d(TAG, "attach applied: \"${tv.text?.take(20)}\" size=${tv.textSize}px")
                     }
                 }
         }.onFailure {
             WeLogger.w(TAG, "failed to hook TextView.onAttachedToWindow", it)
             return
         }
-        WeLogger.i(TAG, "global TextView attach hook installed (threshold 14sp)")
+        WeLogger.i(TAG, "global TextView attach hook installed (threshold 12sp)")
     }
 
     /** 属性启发式：单行 + 标题档字号的 TextView 视为昵称/标题 */
@@ -166,7 +135,7 @@ object TwoLineNicknames : SwitchFeature(),
                 }
             }
             if (applied > 0) {
-                WeLogger.d(TAG, "sweep on ${activity.javaClass.simpleName}: applied $applied existing TextView(s)")
+                WeLogger.d(TAG, "sweep on ${activity.javaClass.simpleName}: applied $applied")
             }
         }
     }
@@ -175,23 +144,20 @@ object TwoLineNicknames : SwitchFeature(),
 
     override fun onEnable() {
         WeChatMessageViewApi.addListener(this)
-        WeConversationListViewApi.addListener(this)
         installGlobalAttachHook()
 
-        // 监听页面切换, 每次 onResume 清扫存量 —— 开关打开后无需重启微信,
-        // 返回微信任意页面即生效。
+        // 监听页面切换, 每次 onResume 清扫存量 —— 开关打开后无需重启微信
         runCatching {
             HostInfo.application.registerActivityLifecycleCallbacks(lifecycleCallbacks)
             lifecycleRegistered = true
         }.onFailure {
-            WeLogger.w(TAG, "failed to register lifecycle callbacks (sweep disabled)", it)
+            WeLogger.w(TAG, "failed to register lifecycle callbacks", it)
         }
-        WeLogger.i(TAG, "enabled: attach hook + lifecycle sweep + chat/conversation listeners")
+        WeLogger.i(TAG, "enabled: attach hook + lifecycle sweep + chat listener")
     }
 
     override fun onDisable() {
         WeChatMessageViewApi.removeListener(this)
-        WeConversationListViewApi.removeListener(this)
         if (lifecycleRegistered) {
             runCatching { HostInfo.application.unregisterActivityLifecycleCallbacks(lifecycleCallbacks) }
             lifecycleRegistered = false
@@ -222,22 +188,17 @@ object TwoLineNicknames : SwitchFeature(),
         tv.maxLines = 2
         tv.ellipsize = TextUtils.TruncateAt.END
 
-        // 微信自绘 NoMeasuredTextView 会忽略 maxLines，直接反射写私有字段 mMaxMode=2；
-        // 字段名跨版本稳定（从 8.0.x 沿用至今），Build.VERSION.SDK_INT 检查防 NPE。
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+        // NoMeasuredTextView 会忽略 maxLines，直接反射写私有字段 mMaxMode=2
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.LOLLIPOP) {
             runCatching {
                 val mMaxMode = tv.javaClass.getDeclaredField("mMaxMode").apply { isAccessible = true }
                 val mMaximum = tv.javaClass.getDeclaredField("mMaximum").apply { isAccessible = true }
                 mMaxMode.setInt(tv, 2)       // 2 == MAX_LINES
                 mMaximum.setInt(tv, 2)
-            }.onFailure {
-                // 该版本字段名不同（罕见情况），退回到标准路径已足够
-                WeLogger.d(TAG, "NoMeasuredTextView field hack failed (non-fatal): ${it.message}")
             }
         }
 
-        // 聊天页 userTV 的共享样式带 240dp 硬上限, 解除后由父布局约束实际宽度;
-        // 列表标题保留原有 maxWidth（防止挤占右侧时间戳）, 仅放开行数
+        // 聊天页 userTV 的共享样式带 240dp 硬上限, 解除后由父布局约束实际宽度
         if (removeWidthCap) tv.maxWidth = Int.MAX_VALUE
         // 修改后强制重新布局 + 重绘, 确保已显示的行立即生效
         tv.requestLayout()
