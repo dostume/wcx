@@ -141,6 +141,10 @@ object TwoLineNicknames : SwitchFeature(),
     /** 遍历 Activity 全部视图, 对符合条件的存量 TextView 应用双行（幂等） */
     private fun sweepExistingViews(activity: Activity) {
         if (!isEnabled) return
+        // 排除设置页和联系人搜索页 —— 这些页面的标题 TextView 不应被修改
+        val activityName = activity.javaClass.simpleName
+        if (activityName in EXCLUDED_ACTIVITY_SUFFIXES) return
+
         runCatching {
             var applied = 0
             activity.window?.decorView?.let { root ->
