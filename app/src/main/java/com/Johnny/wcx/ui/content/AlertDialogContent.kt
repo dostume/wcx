@@ -4,6 +4,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
@@ -38,7 +39,9 @@ fun AlertDialogContent(
             .wrapContentHeight()
     ) {
         Column(
-            modifier = Modifier.padding(if (fullScreen) 12.dp else 20.dp),
+            modifier = Modifier
+                .padding(if (fullScreen) 12.dp else 20.dp)
+                .then(if (fullScreen) Modifier.fillMaxSize() else Modifier),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             Row(
