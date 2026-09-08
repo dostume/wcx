@@ -44,7 +44,14 @@ object WeLauncher {
             // fix up Jetpack Compose
             // fuck you google
             Resources::class.java.getDeclaredMethod("getString", int).hookBeforeDirectly {
-                result = runCatching { invokeOriginal() }.getOrNull() ?: "null"
+                try {
+                    val original = invokeOriginal()
+                    if (original != null) {
+                        result = original
+                    }
+                } catch (_: Throwable) {
+                    // 保持 result 不变，让微信自己处理异常
+                }
             }
         }
 
