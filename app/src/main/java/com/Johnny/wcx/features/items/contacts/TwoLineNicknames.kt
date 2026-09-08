@@ -16,6 +16,12 @@ import com.Johnny.wcx.ui.utils.allViews
 import com.Johnny.wcx.utils.HostInfo
 import com.Johnny.wcx.utils.WeLogger
 
+/** 从 View 向上查找其所属的 Activity */
+private fun View.findActivity(): Activity? = when (val ctx = context) {
+    is Activity -> ctx
+    else -> null
+}
+
 /**
  * 长昵称双行显示
  *
@@ -28,6 +34,14 @@ import com.Johnny.wcx.utils.WeLogger
  *  3. ActivityLifecycleCallbacks + decorView清扫（存量视图即时生效）：
  *     开启功能后无需重启微信，返回任意页面即生效。
  */
+
+// 排除设置页 Activity —— 设置页分组标题也会被误判为"昵称"而应用双行布局，导致空白
+private val EXCLUDED_ACTIVITY_SUFFIXES = setOf(
+    "MainSettingsUI",
+    "CommonSettingsUI",
+    "SettingsUI"
+)
+
 @Feature(
     name = "长昵称双行显示",
     categories = ["聊天", "联系人与群组"],
@@ -100,6 +114,9 @@ object TwoLineNicknames : SwitchFeature(),
                 .firstMethod { name = "onAttachedToWindow" }
                 .hookAfter {
                     val tv = thisObject as? TextView ?: return@hookAfter
+                    // 排除设置页中的 TextView
+                    val activity = tv.findActivity() ?: return@hookAfter
+                    if (activity.javaClass.simpleName in EXCLUDED_ACTIVITY_SUFFIXES) return@hookAfter
                     if (isTitleLikeSingleLine(tv)) {
                         applyTwoLine(tv, removeWidthCap = false)
                         WeLogger.d(TAG, "attach applied: \"${tv.text?.take(20)}\" size=${tv.textSize}px")

@@ -55,7 +55,15 @@ abstract class WePrefs protected constructor() : SharedPreferences, SharedPrefer
     companion object {
         const val PREFS_NAME = "wekit_prefs"
 
-        val default by lazy { MmkvPrefsImpl(PREFS_NAME) }
+        /**
+         * 根据当前宿主包名生成独立的 MMKV ID，防止主微信和分身（user 999）配置混淆。
+         * 例如：com.tencent.mm → "wekit_prefs_com_tencent_mm"
+         */
+        private val safePrefsId: String by lazy {
+            PREFS_NAME + "_" + com.Johnny.wcx.utils.HostInfo.packageName.replace(".", "_")
+        }
+
+        val default by lazy { MmkvPrefsImpl(safePrefsId) }
 
         fun getBoolOrFalse(key: String): Boolean {
             return default.getBoolOrFalse(key)
