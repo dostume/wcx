@@ -35,11 +35,14 @@ private fun View.findActivity(): Activity? = when (val ctx = context) {
  *     开启功能后无需重启微信，返回任意页面即生效。
  */
 
-// 排除设置页 Activity —— 设置页分组标题也会被误判为"昵称"而应用双行布局，导致空白
+// 排除设置页和联系人搜索页 Activity —— 这些页面的标题 TextView 也会被误判为"昵称"而应用双行布局，导致空白
 private val EXCLUDED_ACTIVITY_SUFFIXES = setOf(
     "MainSettingsUI",
     "CommonSettingsUI",
-    "SettingsUI"
+    "SettingsUI",
+    "MvvmSelectContactUI",
+    "MvvmContactListUI",
+    "LauncherUI"
 )
 
 @Feature(
