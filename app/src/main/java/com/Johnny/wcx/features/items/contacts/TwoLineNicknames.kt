@@ -16,9 +16,16 @@ import com.Johnny.wcx.ui.utils.allViews
 import com.Johnny.wcx.utils.HostInfo
 import com.Johnny.wcx.utils.WeLogger
 
-/** 从 View 向上查找其所属的 Activity */
+/** 从 View 的 context 链中查找所属 Activity */
 private fun View.findActivity(): Activity? = when (val ctx = context) {
     is Activity -> ctx
+    is android.content.ContextWrapper -> ctx.baseContext.findActivityImpl()
+    else -> null
+}
+
+private tailrec fun Context.findActivityImpl(): Activity? = when (this) {
+    is Activity -> this
+    is android.content.ContextWrapper -> baseContext.findActivityImpl()
     else -> null
 }
 
