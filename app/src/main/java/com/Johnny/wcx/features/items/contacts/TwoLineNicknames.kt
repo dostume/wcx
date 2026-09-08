@@ -2,6 +2,8 @@ package com.Johnny.wcx.features.items.contacts
 
 import android.app.Activity
 import android.app.Application
+import android.content.Context
+import android.content.ContextWrapper
 import android.os.Bundle
 import android.text.TextUtils
 import android.view.View
