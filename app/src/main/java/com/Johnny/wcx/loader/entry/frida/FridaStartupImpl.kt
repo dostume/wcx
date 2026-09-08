@@ -4,6 +4,7 @@ import android.util.Log
 import com.Johnny.wcx.BuildConfig
 import com.Johnny.wcx.loader.abc.IClassLoaderHelper
 import com.Johnny.wcx.loader.abc.ILoaderService
+import com.Johnny.wcx.utils.WeLogger
 import java.io.File
 import java.lang.reflect.Method
 
@@ -54,10 +55,12 @@ object FridaStartupImpl : ILoaderService {
     override val mainModulePath: String
         get() = mModulePath.absolutePath
 
-    override fun log(msg: String) = Log.i(BuildConfig.TAG, msg).let {}
+    override fun log(msg: String) {
+        if (!WeLogger.isAllLogsDisabled()) Log.i(BuildConfig.TAG, msg)
+    }
 
     override fun log(tr: Throwable) {
-        Log.e(BuildConfig.TAG, tr.toString(), tr)
+        if (!WeLogger.isAllLogsDisabled()) Log.e(BuildConfig.TAG, tr.toString(), tr)
     }
 
     override fun queryExtension(key: String, vararg args: Any?): Any? {
