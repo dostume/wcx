@@ -1436,7 +1436,7 @@ object Themes : ClickableFeature(), IResolveDex {
         }
     }
 
-    private val classMmPopupWindow by dexClass {
+    private val classMmPopupWindow by dexClass(allowFailure = true) {
         matcher {
             usingStrings("MicroMsg.MMPopupWindow", "dismiss exception, e = ")
         }
@@ -2786,6 +2786,7 @@ object Themes : ClickableFeature(), IResolveDex {
 
     /** P5.i —— PopupWindowHook（C0977lv 9/10） */
     private fun hookI() {
+        if (classMmPopupWindow.isPlaceholder) return
         val popupClass = classMmPopupWindow.clazz
         popupClass.reflekt().firstMethod { name = "setBackgroundDrawable" }.hookBefore {
             val stackContains = Thread.currentThread().stackTrace.any {
