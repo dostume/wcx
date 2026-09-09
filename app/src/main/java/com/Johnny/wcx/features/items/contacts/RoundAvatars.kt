@@ -29,7 +29,7 @@ object RoundAvatars : ClickableFeature(), IResolveDex {
 
     private const val KEY_ROUND_AVATAR = "round_avatar_radius_factor"
 
-    private val methodLoadAvatar by dexMethod {
+    private val methodLoadAvatar by dexMethod(allowFailure = true) {
         matcher {
             paramTypes(
                 "android.widget.ImageView",
@@ -40,23 +40,31 @@ object RoundAvatars : ClickableFeature(), IResolveDex {
             usingEqStrings("MicroMsg.AvatarDrawable")
         }
     }
-    private val ctorAvatarCreate by dexConstructor {
+    private val ctorAvatarCreate by dexConstructor(allowFailure = true) {
         matcher {
             usingEqStrings("workerScope", "username")
         }
     }
-    private val methodAvatarModify by dexMethod()
+    private val methodAvatarModify by dexMethod(allowFailure = true)
 
     private val radiusFactor: Float
         get() = WePrefs.getFloatOrDef(KEY_ROUND_AVATAR, 0.5f).coerceIn(0.1f, 0.5f)
 
     override fun onEnable() {
-        methodLoadAvatar.hookBefore {
-            setFloatArg(2, radiusFactor)
+        if (!methodLoadAvatar.isPlaceholder) {
+            methodLoadAvatar.hookBefore {
+                setFloatArg(2, radiusFactor)
+            }
+        } else {
+            WeLogger.w(TAG, "methodLoadAvatar not found, avatar hooks may not work")
         }
 
-        ctorAvatarCreate.hookBefore {
-            setFloatArg(2, radiusFactor)
+        if (!ctorAvatarCreate.isPlaceholder) {
+            ctorAvatarCreate.hookBefore {
+                setFloatArg(2, radiusFactor)
+            }
+        } else {
+            WeLogger.w(TAG, "ctorAvatarCreate not found, avatar hooks may not work")
         }
 
         if (!methodAvatarModify.isPlaceholder) {
@@ -66,6 +74,10 @@ object RoundAvatars : ClickableFeature(), IResolveDex {
         }
 
         notifyCustomContactAvatarChanged()
+    }
+
+    companion object {
+        private const val TAG = "RoundAvatars"
     }
 
     override fun onDisable() {
