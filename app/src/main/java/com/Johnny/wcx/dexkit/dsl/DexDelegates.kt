@@ -410,6 +410,10 @@ class DexConstructorDelegate internal constructor(
 
     override fun getDescriptorString(): String? = descriptor?.descriptor
 
+    val isPlaceholder
+        get() = descriptor != null &&
+                descriptor!!.name == "Lcom/tencent/mm/ui/LauncherUI;->getInstance()Lcom/tencent/mm/ui/LauncherUI;"
+
     override fun loadDescriptor(value: String) {
         descriptor = DexMethodDescriptor(value)
         cachedConstructor = null

@@ -19,6 +19,7 @@ import com.Johnny.wcx.ui.content.AlertDialogContent
 import com.Johnny.wcx.ui.content.Button
 import com.Johnny.wcx.ui.content.TextButton
 import com.Johnny.wcx.ui.utils.showComposeDialog
+import com.Johnny.wcx.utils.WeLogger
 import org.luckypray.dexkit.DexKitBridge
 
 @Feature(
@@ -27,6 +28,7 @@ import org.luckypray.dexkit.DexKitBridge
 )
 object RoundAvatars : ClickableFeature(), IResolveDex {
 
+    private const val TAG = "RoundAvatars"
     private const val KEY_ROUND_AVATAR = "round_avatar_radius_factor"
 
     private val methodLoadAvatar by dexMethod(allowFailure = true) {
@@ -40,12 +42,12 @@ object RoundAvatars : ClickableFeature(), IResolveDex {
             usingEqStrings("MicroMsg.AvatarDrawable")
         }
     }
-    private val ctorAvatarCreate by dexConstructor(allowFailure = true) {
+    private val ctorAvatarCreate by dexConstructor(throwOnFailure = false) {
         matcher {
             usingEqStrings("workerScope", "username")
         }
     }
-    private val methodAvatarModify by dexMethod(allowFailure = true)
+    private val methodAvatarModify by dexMethod(allowFailure = true) { }
 
     private val radiusFactor: Float
         get() = WePrefs.getFloatOrDef(KEY_ROUND_AVATAR, 0.5f).coerceIn(0.1f, 0.5f)
@@ -77,10 +79,6 @@ object RoundAvatars : ClickableFeature(), IResolveDex {
 
         WeLogger.i(TAG, "RoundAvatars enabled, radiusFactor=$radiusFactor, CustomLocalFriendAvatars.isActive=${CustomLocalFriendAvatars.isActive}")
         notifyCustomContactAvatarChanged()
-    }
-
-    companion object {
-        private const val TAG = "RoundAvatars"
     }
 
     override fun onDisable() {
