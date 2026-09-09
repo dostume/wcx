@@ -71,8 +71,11 @@ object RoundAvatars : ClickableFeature(), IResolveDex {
             methodAvatarModify.hookBefore {
                 setFloatArg(3, radiusFactor)
             }
+        } else {
+            WeLogger.w(TAG, "methodAvatarModify not found, avatar hooks may not work")
         }
 
+        WeLogger.i(TAG, "RoundAvatars enabled, radiusFactor=$radiusFactor, CustomLocalFriendAvatars.isActive=${CustomLocalFriendAvatars.isActive}")
         notifyCustomContactAvatarChanged()
     }
 
@@ -81,6 +84,7 @@ object RoundAvatars : ClickableFeature(), IResolveDex {
     }
 
     override fun onDisable() {
+        WeLogger.i(TAG, "RoundAvatars disabled, CustomLocalFriendAvatars.isActive=${CustomLocalFriendAvatars.isActive}")
         notifyCustomContactAvatarChanged()
     }
 

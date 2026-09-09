@@ -616,6 +616,7 @@ object CustomLocalFriendAvatars : ClickableFeature(), IContactInfoProvider, IRes
     }
 
     fun onRoundAvatarConfigChanged() {
+        WeLogger.i(TAG, "onRoundAvatarConfigChanged called, boundAvatarViews.size=${boundAvatarViews.size}, avatarMap.size=${avatarMap.size}")
         clearBitmapCaches()
         boundAvatarViews.entries.toList().forEach { (imageView, binding) ->
             if (avatarMap[binding.username] != binding.uri) return@forEach
