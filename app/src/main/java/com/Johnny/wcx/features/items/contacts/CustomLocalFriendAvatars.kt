@@ -264,9 +264,13 @@ object CustomLocalFriendAvatars : ClickableFeature(), IContactInfoProvider, IRes
 
                     val redirectedId = fallbackUsernameProvider?.invoke(wxId)
                     if (redirectedId != null) {
+                        WeLogger.d(TAG, "redirecting $wxId -> $redirectedId for hook $name")
                         args[1] = redirectedId
                         return@hookBefore
                     }
+
+                    val hasCustomAvatar = avatarMap.containsKey(wxId)
+                    WeLogger.d(TAG, "hook $name called: wxId=$wxId, hasCustomAvatar=$hasCustomAvatar, avatarMap.size=${avatarMap.size}, boundViews=${boundAvatarViews.size}")
 
                     if (applyCustomAvatar(imageView, wxId, roundAvatarRadiusFactor)) {
                         try {
@@ -381,11 +385,16 @@ object CustomLocalFriendAvatars : ClickableFeature(), IContactInfoProvider, IRes
     }
 
     private fun applyCustomAvatar(imageView: ImageView, username: String, radiusFactor: Float): Boolean {
-        val uri = avatarMap[username]?.takeIf { it.isNotBlank() } ?: return false
+        val uri = avatarMap[username]?.takeIf { it.isNotBlank() } ?: run {
+            WeLogger.d(TAG, "applyCustomAvatar: no custom avatar for $username")
+            return false
+        }
         val effectiveRadiusFactor = effectiveRadiusFactor(radiusFactor)
         val tag = "$username$SEP$uri$SEP$effectiveRadiusFactor"
         imageView.setTag(VIEW_TAG_CUSTOM_AVATAR, tag)
         boundAvatarViews[imageView] = BoundAvatar(username, uri, radiusFactor)
+
+        WeLogger.d(TAG, "applyCustomAvatar: loading $uri into ${System.identityHashCode(imageView)}")
 
         // 首次加载：若 bitmap 解码失败（如 content provider 尚未就绪），让原始方法先跑，
         // 避免 ImageView 空白；post 回调会做二次尝试覆盖。
