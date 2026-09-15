@@ -4,10 +4,16 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LocalContentColor
@@ -36,7 +42,7 @@ fun AlertDialogContent(
         tonalElevation = 6.dp,
         modifier = modifier
             .fillMaxWidth()
-            .wrapContentHeight()
+            .then(if (fullScreen) Modifier.fillMaxHeight() else Modifier.wrapContentHeight())
     ) {
         Column(
             modifier = Modifier
@@ -68,20 +74,24 @@ fun AlertDialogContent(
 
             HorizontalDivider()
 
-            text?.let {
+            if (text != null) {
                 val bodyStyle = MaterialTheme.typography.bodyMedium
                 val bodyColor = MaterialTheme.colorScheme.onSurface
 
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .heightIn(max = if (fullScreen) 4000.dp else 400.dp)
+                        .weight(1f, fill = false)
                 ) {
                     CompositionLocalProvider(
                         LocalTextStyle provides bodyStyle,
                         LocalContentColor provides bodyColor
                     ) {
-                        it()
+                        if (fullScreen) {
+                            text()
+                        } else {
+                            text()
+                        }
                     }
                 }
             }
