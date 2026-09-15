@@ -729,7 +729,7 @@ object CustomLocalFriendAvatars : ClickableFeature(), IContactInfoProvider, IRes
             filteredContacts = filteredContacts,
             confirmButtonText = "",
             confirmButtonEnabled = false,
-            showConfirmButton = false,
+            
             dismissButtonText = "关闭",
             onDismiss = onDismiss,
             onConfirm = {},

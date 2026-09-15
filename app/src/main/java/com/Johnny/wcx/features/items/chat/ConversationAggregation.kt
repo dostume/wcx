@@ -788,7 +788,7 @@ object ConversationAggregation : ClickableFeature(),
             filteredContacts = filteredContacts,
             confirmButtonText = "",
             confirmButtonEnabled = false,
-            showConfirmButton = false,
+            
             dismissButtonText = "取消",
             onDismiss = onDismiss,
             onConfirm = {},

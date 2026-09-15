@@ -149,7 +149,6 @@ fun BaseContactSelector(
     modifier: Modifier = Modifier,
     selectionKey: Any,
     isSelected: (IWeContact) -> Boolean,
-    showConfirmButton: Boolean = true,
     dismissButtonText: String? = null,
     avatarModelProvider: ((IWeContact) -> Any)? = { it.avatarUrl },
     subtitleProvider: ((IWeContact) -> String)? = { it.wxId },
@@ -925,21 +924,19 @@ fun BaseContactSelector(
                 }
             }
         },
+        confirmButton = {
+            Button(
+                onClick = onConfirm,
+                enabled = confirmButtonEnabled
+            ) {
+                Text(confirmButtonText)
+            }
+        },
         dismissButton = {
             TextButton(onDismiss) {
                 Text(dismissButtonText ?: "取消")
             }
-        },
-        confirmButton = if (showConfirmButton) {
-            {
-                Button(
-                    onClick = onConfirm,
-                    enabled = confirmButtonEnabled
-                ) {
-                    Text(confirmButtonText)
-                }
-            }
-        } else null
+        }
     )
 }
 
