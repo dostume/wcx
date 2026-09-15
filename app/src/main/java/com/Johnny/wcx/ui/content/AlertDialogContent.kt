@@ -91,7 +91,6 @@ fun AlertDialogContent(
                             Box(
                                 modifier = Modifier
                                     .fillMaxSize()
-                                    .verticalScroll(rememberScrollState())
                             ) {
                                 text()
                             }
