@@ -100,7 +100,7 @@ jobs:
         if: steps.merge.outputs.changed == 'true' || github.event_name != 'schedule' || inputs.force_release == true
         env:
           # 与下方 Publish 步骤的 tag 同源, 写入 APK 的 BuildConfig.RELEASE_TAG
-          WCX_RELEASE_TAG: v247
+          WCX_RELEASE_TAG: v259
         run: |
           ./gradlew --no-daemon assembleRelease
 
@@ -113,13 +113,13 @@ jobs:
           if-no-files-found: error
 
       - name: Publish APKs to Release
-        # 上游有更新 (或手动强制) 时发布 Release, tag 固定 v247 (应用 versionCode),
+        # 上游有更新 (或手动强制) 时发布 Release, tag 固定 v259 (应用 versionCode),
         # 重复发布会更新既有 Release, 不会堆积重复项
         if: steps.merge.outputs.changed == 'true' || inputs.force_release == true
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v247
-          name: v247
+          tag_name: v259
+          name: v259
           body: |
             自动同步上游 Johnny520/wcx 后构建。
 

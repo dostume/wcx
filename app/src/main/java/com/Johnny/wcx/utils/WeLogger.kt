@@ -21,6 +21,9 @@ object WeLogger {
 
     // ========== 全局日志开关（设置页"关闭所有日志"） ==========
 
+    /** 文件系统上的开关标记：MMKV 尚未就绪的极早期（加载阶段）用得上 */
+    private const val DISABLE_FLAG_FILE = "logs_disabled.flag"
+
     /**
      * 关闭后：不输出 logcat（全部等级）、不写模块日志文件（moduleData/logs）。
      *
@@ -28,15 +31,30 @@ object WeLogger {
      * 保证设置页切换后微信所有进程立即生效。mmap 布尔读取开销低于单次
      * LocalDateTime.now()，对日志热路径影响可忽略。
      *
-     * MMKV 尚未初始化的极早期调用（NativeLoader.init 之前的少数日志）
-     * 安全兜底为"未关闭"，且绝不因读取失败抛异常影响宿主。
+     * MMKV 尚未初始化的极早期调用（NativeLoader.init 之前的少数日志）无法读 MMKV，
+     * 回退到 moduleData 下的标记文件 [DISABLE_FLAG_FILE]，由设置页切换时同步写入，
+     * 这样连加载阶段的日志也能被关掉。任何一步失败都绝不抛异常影响宿主。
      */
     private fun isDisabled(): Boolean {
-        return try {
-            com.Johnny.wcx.preferences.WePrefs.default
+        runCatching {
+            return com.Johnny.wcx.preferences.WePrefs.default
                 .getBoolean(com.Johnny.wcx.constants.Preferences.DISABLE_ALL_LOGS, false)
-        } catch (_: Throwable) {
-            false
+        }
+        return runCatching {
+            java.nio.file.Files.exists(KnownPaths.moduleData / DISABLE_FLAG_FILE)
+        }.getOrDefault(false)
+    }
+
+    /** 设置页切换「关闭所有日志」时同步写/删文件系统标记，覆盖 MMKV 就绪前的早期日志。 */
+    fun setLogsDisabledFlag(disabled: Boolean) {
+        runCatching {
+            val flag = (KnownPaths.moduleData / DISABLE_FLAG_FILE).toFile()
+            if (disabled) {
+                flag.parentFile?.mkdirs()
+                flag.createNewFile()
+            } else {
+                flag.delete()
+            }
         }
     }
 

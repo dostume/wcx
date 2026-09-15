@@ -641,111 +641,22 @@ private fun isVisibleTree(v: View): Boolean {
     return true
 }
 
-/** 诊断：isHomePageActive 判定变化时写一次 diag.log（限频） */
-@Volatile private var lastDiagHomeKey = ""
+/**
+ * 以下 4 个 diag* 函数曾是开发期调试用的旁路日志，直接硬编码写
+ * /sdcard/Android/data/com.tencent.mm/WCX/diag.log，既不受「关闭所有日志」开关控制，
+ * 又挂在 isHomePageActive() 热路径上（每次触摸都遍历一遍 decorView 写文件）。
+ * 现全部置空为 no-op：调用点保留以免破坏结构，运行时零开销、零输出。
+ */
 private val listDiagSet = java.util.Collections.synchronizedSet(java.util.HashSet<String>())
-private fun diagIsHome(act: Activity, fragCls: String?, isHome: Boolean, visible: Boolean?) {
-    val key = "${act.javaClass.name}|$fragCls|$isHome|$visible"
-    if (key == lastDiagHomeKey) return
-    lastDiagHomeKey = key
-    runCatching {
-        val f = java.io.File("/sdcard/Android/data/com.tencent.mm/WCX/diag.log")
-        f.parentFile?.mkdirs()
-        f.appendText(System.currentTimeMillis().toString() +
-            " isHomePageActive act=${act.javaClass.name} super=${act.javaClass.superclass?.name}" +
-            " frag=$fragCls isHome=$isHome visible=$visible\n")
-    }
-}
+private fun diagIsHome(act: Activity, fragCls: String?, isHome: Boolean, visible: Boolean?) = Unit
 
 /** 诊断：记录 LauncherUI decor 顶层 view 结构签名（去重）。用户在 4 个 Tab 间切换时，
  *  每个 Tab 的顶栏（搜索/+ 栏等）结构不同，据此识别「微信」Tab 以控制侧边栏入口显隐。 */
-private val topBarDiagSet = java.util.Collections.synchronizedSet(java.util.HashSet<String>())
-private fun diagFile(msg: String) {
-    runCatching {
-        val f = java.io.File("/sdcard/Android/data/com.tencent.mm/WCX/diag.log")
-        f.parentFile?.mkdirs()
-        f.appendText(System.currentTimeMillis().toString() + " " + msg + "\n")
-    }
-}
-private fun dumpTopBar(act: Activity) {
-    if (topBarDiagSet.size > 40) return
-    try {
-        val decor = act.window.decorView
-        val sb = StringBuilder()
-        fun walk(v: View, depth: Int) {
-            if (depth > 5 || sb.length > 2000) return
-            val vis = if (v.visibility == View.VISIBLE) "V" else "G"
-            val idName = runCatching { v.resources.getResourceEntryName(v.id) }.getOrNull()
-            val txt = if (v is TextView) (v.text?.toString() ?: "").take(8) else ""
-            sb.append(v.javaClass.simpleName).append('#').append(idName).append('#').append(vis).append('[').append(txt).append("] ")
-            if (v is ViewGroup) for (i in 0 until v.childCount) walk(v.getChildAt(i), depth + 1)
-        }
-        walk(decor, 0)
-        val sig = sb.toString()
-        if (sig.isNotBlank() && topBarDiagSet.add(sig)) {
-            val f = java.io.File("/sdcard/Android/data/com.tencent.mm/WCX/diag.log")
-            f.parentFile?.mkdirs()
-            f.appendText(System.currentTimeMillis().toString() + " TOPBAR " + sig.take(1500) + "\n")
-        }
-    } catch (e: Throwable) {
-        runCatching {
-            val f = java.io.File("/sdcard/Android/data/com.tencent.mm/WCX/diag.log")
-            f.parentFile?.mkdirs()
-            f.appendText(System.currentTimeMillis().toString() + " TOPBAR ERR $e\n")
-        }
-    }
-}
+private fun diagFile(msg: String) = Unit
+private fun dumpTopBar(act: Activity) = Unit
 
 /** 诊断：LauncherUI 非 androidx FragmentActivity 时，dump 继承链与 fragment 反射信息（限频一次） */
-@Volatile private var launcherDiagDone = false
-private fun dumpLauncherDiagnostics(act: Activity) {
-    if (launcherDiagDone) return
-    launcherDiagDone = true
-    runCatching {
-        val f = java.io.File("/sdcard/Android/data/com.tencent.mm/WCX/diag.log")
-        f.parentFile?.mkdirs()
-        val append: (String) -> Unit = { s -> f.appendText(System.currentTimeMillis().toString() + " " + s + "\n") }
-
-        val sb = StringBuilder()
-        var cls: Class<*>? = act.javaClass
-        while (cls != null) {
-            sb.append(cls.name).append(" > ")
-            cls = cls.superclass
-        }
-        append("LauncherUI chain: $sb")
-
-        val supportCls = runCatching { Class.forName("android.support.v4.app.FragmentActivity") }.getOrNull()
-        append("old-support-FragmentActivity present=${supportCls != null} isInstance=${supportCls?.isInstance(act)}")
-        val androidxCls = runCatching { Class.forName("androidx.fragment.app.FragmentActivity") }.getOrNull()
-        append("androidx-FragmentActivity isInstance=${androidxCls?.isInstance(act)}")
-
-        // 反射尝试各种 fragment 管理器
-        val candidates = listOf(
-            "getSupportFragmentManager", "getFragmentManager",
-            "getMMFragmentManager", "getChildFragmentManager"
-        )
-        for (mName in candidates) {
-            runCatching {
-                val m = act.javaClass.getMethod(mName)
-                val fm = m.invoke(act) ?: return@runCatching
-                val getFrags = fm.javaClass.methods.firstOrNull { it.name == "getFragments" }
-                    ?: return@runCatching
-                val frags = getFrags.invoke(fm) as? List<*> ?: return@runCatching
-                val desc = frags.mapNotNull { fr ->
-                    runCatching {
-                        val fcls = fr?.javaClass ?: return@runCatching
-                        val r = runCatching { fcls.getMethod("isResumed").invoke(fr) as Boolean }.getOrDefault(false)
-                        val v = runCatching { fcls.getMethod("isVisible").invoke(fr) as Boolean }.getOrDefault(false)
-                        val h = runCatching { fcls.getMethod("isHidden").invoke(fr) as Boolean }.getOrDefault(false)
-                        val vw = runCatching { fcls.getMethod("getView").invoke(fr) }.getOrNull()
-                        "${fcls.name}(r=$r,v=$v,h=$h,view=${vw?.javaClass?.name})"
-                    }.getOrNull()
-                }
-                append("fragmentManager($mName) size=${frags.size}: $desc")
-            }
-        }
-    }
-}
+private fun dumpLauncherDiagnostics(act: Activity) = Unit
 
 /**
  * 首页 Tab Fragment 类名匹配（兼容多版本微信）：

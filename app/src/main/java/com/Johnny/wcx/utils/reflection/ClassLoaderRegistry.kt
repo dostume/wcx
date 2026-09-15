@@ -84,7 +84,7 @@ object ClassLoaderRegistry {
                             .get(loadedApk) as? ClassLoader
                     }.getOrNull()?.let { walkChain(it) }
                 }
-            }.onFailure { XposedBridge.log("ClassLoaderRegistry: $fieldName: $it") }
+            }.onFailure { WeLogger.w("ClassLoaderRegistry", "$fieldName: $it") }
         }
     }
 
@@ -129,7 +129,7 @@ object ClassLoaderRegistry {
                 ?.filterIsInstance<ClassLoader>()
                 ?.forEach { walkChain(it) }
 
-        }.onFailure { XposedBridge.log("ClassLoaderRegistry: heap scan failed: $it") }
+        }.onFailure { WeLogger.w("ClassLoaderRegistry", "heap scan failed: $it") }
     }
 
     // ────────────────────────────────────────────────────────────────
