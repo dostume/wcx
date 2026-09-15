@@ -3,6 +3,7 @@
 package com.Johnny.wcx.loader.entry.zygisk
 
 import android.util.Log
+import com.Johnny.wcx.utils.WeLogger
 import androidx.annotation.Keep
 import com.android.dx.DexMaker
 import com.android.dx.FieldId
@@ -528,9 +529,9 @@ class ArtHookBridge : IHookBridge {
                 ) {
                     if (!ArtHookBridgeRuntime.restoreCallback(hookId, registration)) {
                         active = false
-                        Log.e(TAG, "failed to unhook $member; callback restoration also failed")
+                        WeLogger.e(TAG, "failed to unhook $member; callback restoration also failed")
                     } else {
-                        Log.e(TAG, "failed to unhook $member; callback restored for retry")
+                        WeLogger.e(TAG, "failed to unhook $member; callback restored for retry")
                     }
                     return
                 }

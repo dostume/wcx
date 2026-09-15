@@ -1,11 +1,11 @@
 package com.Johnny.wcx.utils
 
 import android.net.Uri
-import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
 import com.Johnny.wcx.BuildConfig
+import com.Johnny.wcx.utils.WeLogger
 import com.Johnny.wcx.utils.android.showToast
 
 /**
@@ -47,11 +47,11 @@ fun ComponentActivity.registerBshSnapshotDecompileLaunchers(
     ) { uri: Uri? ->
         if (uri != null) {
             try {
-                Log.i(BuildConfig.TAG, "file $uri chosen")
+                WeLogger.i(BuildConfig.TAG, "file $uri chosen")
                 contentResolver.openInputStream(uri)?.use { inputStream ->
-                    Log.i(BuildConfig.TAG, "decompiling file...")
+                    WeLogger.i(BuildConfig.TAG, "decompiling file...")
                     val result = BshSnapshotDecompiler.decompileStream(inputStream).trim()
-                    Log.i(BuildConfig.TAG, "decompiled successfully (${result.length} chars)")
+                    WeLogger.i(BuildConfig.TAG, "decompiled successfully (${result.length} chars)")
                     if (result.isEmpty()) {
                         showToast(this, "错误: 反编译结果为空!")
                         onFinished()
@@ -62,7 +62,7 @@ fun ComponentActivity.registerBshSnapshotDecompileLaunchers(
                     saveFileLauncher.launch("$inputName.java")
                 }
             } catch (ex: Exception) {
-                Log.e(BuildConfig.TAG, "exception thrown", ex)
+                WeLogger.e(BuildConfig.TAG, "exception thrown", ex)
                 showToast(this, "错误: ${ex.message}")
                 onFinished()
             }

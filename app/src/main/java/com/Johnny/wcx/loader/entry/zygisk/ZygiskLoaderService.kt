@@ -1,6 +1,5 @@
 package com.Johnny.wcx.loader.entry.zygisk
 
-import android.util.Log
 import androidx.annotation.Keep
 import com.Johnny.wcx.loader.abc.IClassLoaderHelper
 import com.Johnny.wcx.loader.abc.ILoaderService
@@ -24,11 +23,11 @@ internal class ZygiskLoaderService(
     override val mainModulePath: String get() = modulePath
 
     override fun log(msg: String) {
-        if (!WeLogger.isAllLogsDisabled()) Log.i(TAG, msg)
+        if (!WeLogger.isAllLogsDisabled()) WeLogger.i(TAG, msg)
     }
 
     override fun log(tr: Throwable) {
-        if (!WeLogger.isAllLogsDisabled()) Log.e(TAG, tr.toString(), tr)
+        if (!WeLogger.isAllLogsDisabled()) WeLogger.e(TAG, tr.toString(), tr)
     }
 
     override fun queryExtension(key: String, vararg args: Any?): Any? = null

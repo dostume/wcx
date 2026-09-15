@@ -141,7 +141,8 @@ object CustomNotificationRingtone : ClickableFeature(), IResolveDex {
     // 从通知里解析出的消息正文（去除群聊「发送者: 」前缀），供关键词匹配
     private val messageRegex = Regex("""^(\[\d+条])?(.+?)?: (.*)$""", RegexOption.DOT_MATCHES_ALL)
 
-    private val currentTalker = ThreadLocal<String?>()
+    // 使用AtomicReference确保线程安全，dealNotify和build()可能在不同线程调用
+    private val currentTalker = java.util.concurrent.atomic.AtomicReference<String?>(null)
 
     // ─── 规则存取（模块 App 与微信进程共用 MMKV，即时生效） ───
 
@@ -238,7 +239,7 @@ object CustomNotificationRingtone : ClickableFeature(), IResolveDex {
                 }
 
                 override fun afterHookedMethod(param: MethodHookParam) {
-                    currentPendingRule.remove()
+                    currentPendingRule.set(null)
                 }
             }
         )

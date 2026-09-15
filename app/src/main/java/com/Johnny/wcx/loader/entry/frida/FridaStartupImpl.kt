@@ -56,11 +56,11 @@ object FridaStartupImpl : ILoaderService {
         get() = mModulePath.absolutePath
 
     override fun log(msg: String) {
-        if (!WeLogger.isAllLogsDisabled()) Log.i(BuildConfig.TAG, msg)
+        if (!WeLogger.isAllLogsDisabled()) WeLogger.i(BuildConfig.TAG, msg)
     }
 
     override fun log(tr: Throwable) {
-        if (!WeLogger.isAllLogsDisabled()) Log.e(BuildConfig.TAG, tr.toString(), tr)
+        if (!WeLogger.isAllLogsDisabled()) WeLogger.e(BuildConfig.TAG, tr.toString(), tr)
     }
 
     override fun queryExtension(key: String, vararg args: Any?): Any? {
