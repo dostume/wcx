@@ -88,7 +88,13 @@ fun AlertDialogContent(
                         LocalContentColor provides bodyColor
                     ) {
                         if (fullScreen) {
-                            text()
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .verticalScroll(rememberScrollState())
+                            ) {
+                                text()
+                            }
                         } else {
                             text()
                         }
