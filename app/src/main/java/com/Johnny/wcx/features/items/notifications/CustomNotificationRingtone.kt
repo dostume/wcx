@@ -144,6 +144,18 @@ object CustomNotificationRingtone : ClickableFeature(), IResolveDex {
     // 使用AtomicReference确保线程安全，dealNotify和build()可能在不同线程调用
     private val currentTalker = java.util.concurrent.atomic.AtomicReference<String?>(null)
 
+    // dealNotify 写入 talker 的时间戳：超过 TTL 就不再用于匹配，避免旧 talker 误伤无关通知
+    private val currentTalkerStamp = java.util.concurrent.atomic.AtomicLong(0L)
+
+    private const val TALKER_TTL_MS = 10_000L
+
+    /** 取出仍然"新鲜"的 talker；过期返回 null（防止无关通知被改道） */
+    private fun freshTalker(): String? {
+        val talker = currentTalker.get() ?: return null
+        if (System.currentTimeMillis() - currentTalkerStamp.get() > TALKER_TTL_MS) return null
+        return talker
+    }
+
     // ─── 规则存取（模块 App 与微信进程共用 MMKV，即时生效） ───
 
     var rules: List<RingtoneRule>
@@ -163,10 +175,12 @@ object CustomNotificationRingtone : ClickableFeature(), IResolveDex {
 
     fun addRule(rule: RingtoneRule) {
         rules = rules + rule
+        grantRingtoneReadPermission(rule.soundUri)
     }
 
     fun updateRule(rule: RingtoneRule) {
         rules = rules.map { if (it.id == rule.id) rule else it }
+        grantRingtoneReadPermission(rule.soundUri)
     }
 
     fun deleteRule(id: String) {
@@ -181,7 +195,12 @@ object CustomNotificationRingtone : ClickableFeature(), IResolveDex {
 
         runCatching {
             methodDealNotify.hookBefore {
-                currentTalker.set(args.getOrNull(1) as? String)
+                val talker = args.getOrNull(1) as? String
+                if (!talker.isNullOrBlank()) {
+                    currentTalker.set(talker)
+                    currentTalkerStamp.set(System.currentTimeMillis())
+                    WeLogger.i(TAG, "dealNotify talker=$talker")
+                }
             }
         }.onFailure { WeLogger.e(TAG, "hook dealNotify failed", it) }
 
@@ -189,7 +208,11 @@ object CustomNotificationRingtone : ClickableFeature(), IResolveDex {
             hookNotificationBuildBefore()
         }.onFailure { WeLogger.e(TAG, "hook Notification.Builder.build failed", it) }
 
-        WeLogger.i(TAG, "ringtone hooks ready (dealNotify talker + Builder.setSound)")
+        runCatching {
+            hookNotificationManagerNotify()
+        }.onFailure { WeLogger.e(TAG, "hook NotificationManager notify failed", it) }
+
+        WeLogger.i(TAG, "ringtone hooks ready (dealNotify talker + channel reroute, rules=${rules.size})")
     }
 
     // 诊断日志去重：同一关键现象只记一次，避免来一条消息刷一条
@@ -200,16 +223,12 @@ object CustomNotificationRingtone : ClickableFeature(), IResolveDex {
         if (diagLogged.add(key)) WeLogger.w(TAG, message())
     }
 
-    // Thread-safe: dealNotify 存入 convWxId，build() before 阶段读取并写入 Builder，after 阶段消费
-    private val currentPendingRule = java.util.concurrent.atomic.AtomicReference<RingtoneRule?>(null)
-
     /**
-     * 两步 Hook：
-     * 1. before 阶段：通过 dealNotify 传来的 ThreadLocal 找到规则，用公共 API setSound() 写入声音、
-     *    setFlag() 写入 FLAG_ONLY_ALERT_ONCE——两者均为 Android 4.1+ 公开接口，无需任何反射字段。
-     * 2. after 阶段：消费 ThreadLocal（防内存泄漏），打一次诊断日志。
+     * Hook Notification.Builder.build()：命中规则后把通知**改道到模块私有渠道**。
      *
-     * 全程不调用 Notification.channelId / mGroupKey / flags 等私有字段，彻底避免 NoSuchFieldException。
+     * 关键：Android 8.0+ 只要通知指定了 channelId，声音一律由 NotificationChannel 决定，
+     * Builder.setSound() 会被系统彻底忽略（这正是"自定义铃声不生效、还是系统提示音"的根因）。
+     * 因此这里必须 setChannelId() 改道到带目标铃声的私有渠道；setSound() 仅作兜底。
      */
     private fun hookNotificationBuildBefore() {
         XposedBridge.hookAllMethods(
@@ -218,38 +237,98 @@ object CustomNotificationRingtone : ClickableFeature(), IResolveDex {
                 override fun beforeHookedMethod(param: MethodHookParam) {
                     try {
                         val builder = param.thisObject as Notification.Builder
-                        val convWxId = currentTalker.get() ?: return
+                        val convWxId = freshTalker() ?: return
                         val rule = matchRule(convWxId, builder) ?: run {
-                            diagOnce("no_rule") { "no ringtone rule matched $convWxId, leaving as-is" }
+                            diagOnce("no_rule_$convWxId") { "no ringtone rule matched $convWxId, leaving as-is" }
                             return
                         }
-                        currentPendingRule.set(rule)
-                        when (rule.mode) {
-                            RuleMode.SILENT -> builder.setSound(null)
-                            RuleMode.RINGTONE -> {
-                                if (rule.soundUri.isNotBlank()) {
-                                    builder.setSound(Uri.parse(rule.soundUri))
-                                }
+                        val channel = applyRule(rule) { builder.setChannelId(it) }
+                        // 兜底：即便系统忽略，也把 sound 写进去（部分 ROM / 无渠道场景仍会读到）
+                        builder.setSound(
+                            if (rule.mode == RuleMode.RINGTONE && rule.soundUri.isNotBlank()) {
+                                Uri.parse(rule.soundUri)
+                            } else {
+                                null
                             }
-                        }
-                        WeLogger.i(TAG, "Builder.setSound set for $convWxId (${rule.mode})")
+                        )
+                        WeLogger.i(TAG, "reroute(build) $convWxId -> channel=$channel mode=${rule.mode}")
                     } catch (e: Throwable) {
                         WeLogger.e(TAG, "apply ringtone override failed", e)
                     }
-                }
-
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    currentPendingRule.set(null)
                 }
             }
         )
     }
 
-    private fun matchRule(convWxId: String, builder: Notification.Builder): RingtoneRule? {
+    /**
+     * 兜底 Hook：部分微信版本不走 Notification.Builder.build()（直接构造 Notification 或走
+     * buildForBundle），此时在真正投递前反射改写通知的渠道与声音。
+     * Notification.sound 是 public 字段可直接赋值；mChannelId 需要反射（Android 8~15 同名）。
+     */
+    private fun hookNotificationManagerNotify() {
+        val callback = object : XC_MethodHook() {
+            override fun beforeHookedMethod(param: MethodHookParam) {
+                try {
+                    val notification = param.args.firstOrNull { it is Notification } as? Notification ?: return
+                    val convWxId = freshTalker() ?: return
+                    val rule = matchRule(convWxId, notification.extras) ?: return
+                    val channel = applyRule(rule) { channelId -> setNotificationChannelId(notification, channelId) }
+                    notification.sound = if (rule.mode == RuleMode.RINGTONE && rule.soundUri.isNotBlank()) {
+                        Uri.parse(rule.soundUri)
+                    } else {
+                        null
+                    }
+                    WeLogger.i(TAG, "reroute(notify) $convWxId -> channel=$channel mode=${rule.mode}")
+                } catch (e: Throwable) {
+                    WeLogger.e(TAG, "apply ringtone override on notify failed", e)
+                }
+            }
+        }
+        runCatching { XposedBridge.hookAllMethods(NotificationManager::class.java, "notify", callback) }
+            .onFailure { WeLogger.e(TAG, "hook NotificationManager.notify failed", it) }
+        runCatching { XposedBridge.hookAllMethods(NotificationManager::class.java, "notifyAsUser", callback) }
+            .onFailure { WeLogger.e(TAG, "hook NotificationManager.notifyAsUser failed", it) }
+    }
+
+    private val notificationChannelIdField: java.lang.reflect.Field? by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
+        runCatching {
+            Notification::class.java.getDeclaredField("mChannelId").apply { isAccessible = true }
+        }.onFailure { WeLogger.w(TAG, "Notification.mChannelId not found: ${it.message}") }.getOrNull()
+    }
+
+    private fun setNotificationChannelId(notification: Notification, channelId: String) {
+        val f = notificationChannelIdField ?: return
+        f.set(notification, channelId)
+    }
+
+    /**
+     * 按规则准备私有渠道并返回渠道 id；通过 setChannel 回调写回（Builder 或反射字段）。
+     * @return 实际使用的渠道 id，失败返回 null
+     */
+    private fun applyRule(rule: RingtoneRule, setChannel: (String) -> Unit): String? {
+        val channelId = when (rule.mode) {
+            RuleMode.SILENT -> if (ensureSilentChannel()) SILENT_CHANNEL else null
+            RuleMode.RINGTONE -> {
+                if (rule.soundUri.isBlank()) null else ensureRingtoneChannel(rule.soundUri)
+            }
+        }
+        // 渠道没建成就不能改道：指向不存在的渠道会导致通知被系统直接丢弃
+        if (channelId.isNullOrBlank()) {
+            WeLogger.w(TAG, "channel unavailable for rule ${rule.id}, skip reroute")
+            return null
+        }
+        setChannel(channelId)
+        return channelId
+    }
+
+    private fun matchRule(convWxId: String, builder: Notification.Builder): RingtoneRule? =
+        matchRule(convWxId, builder.extras)
+
+    private fun matchRule(convWxId: String, extras: android.os.Bundle?): RingtoneRule? {
         val allRules = rules
         if (allRules.isEmpty()) return null
 
-        val rawText = builder.extras?.getCharSequence(Notification.EXTRA_TEXT)?.toString()
+        val rawText = extras?.getCharSequence(Notification.EXTRA_TEXT)?.toString()
         val body = rawText?.let { text ->
             messageRegex.find(text)?.groupValues?.get(3)?.takeIf { it.isNotEmpty() } ?: text
         }.orEmpty()
@@ -278,37 +357,72 @@ object CustomNotificationRingtone : ClickableFeature(), IResolveDex {
 
     // ─── 私有通知渠道 ─────────────────────────────────────────────────────────
 
-    private fun ensureSilentChannel() {
-        val nm = HostInfo.application.getSystemService<NotificationManager>()
-        if (nm.getNotificationChannel(SILENT_CHANNEL) != null) return
-        val ch = NotificationChannel(
-            SILENT_CHANNEL, "WCX 静音通知", NotificationManager.IMPORTANCE_LOW
-        ).apply {
-            enableVibration(false)
-            vibrationPattern = longArrayOf()
-        }
-        nm.createNotificationChannel(ch)
+    /** @return 渠道是否可用（不可用则不能改道，否则通知会被系统丢弃） */
+    private fun ensureSilentChannel(): Boolean {
+        return runCatching {
+            val nm = HostInfo.application.getSystemService<NotificationManager>()
+            if (nm.getNotificationChannel(SILENT_CHANNEL) != null) return@runCatching true
+            val ch = NotificationChannel(
+                SILENT_CHANNEL, "WCX 静音通知", NotificationManager.IMPORTANCE_LOW
+            ).apply {
+                setSound(null, null)
+                enableVibration(false)
+                vibrationPattern = longArrayOf()
+                setShowBadge(true)
+            }
+            nm.createNotificationChannel(ch)
+            true
+        }.onFailure { WeLogger.e(TAG, "create silent channel failed", it) }.getOrDefault(false)
     }
 
     /** 每个自定义铃声 URI 对应一个固定渠道 id；渠道首次创建后声音不再变化（系统限制），
-     *  换铃声即换渠道 id，从而在不动微信原渠道的前提下实现任意铃声切换。 */
-    private fun ensureRingtoneChannel(soundUri: String): String {
+     *  换铃声即换渠道 id，从而在不动微信原渠道的前提下实现任意铃声切换。
+     *  @return 渠道 id；创建失败返回 null（调用方应放弃改道） */
+    private fun ensureRingtoneChannel(soundUri: String): String? {
         val id = "$RING_CHANNEL_PREFIX${soundUri.hashCode().and(0x7fffffff)}"
-        val nm = HostInfo.application.getSystemService<NotificationManager>()
-        if (nm.getNotificationChannel(id) == null) {
+        val uri = Uri.parse(soundUri)
+        return runCatching {
+            val nm = HostInfo.application.getSystemService<NotificationManager>()
+            val existing = nm.getNotificationChannel(id)
+            if (existing != null) {
+                // 渠道已存在且声音一致 → 直接复用
+                if (existing.sound == uri) return@runCatching id
+                // 声音变了（铃声文件被同名覆盖）：系统不允许更新已建渠道的声音，只能删了重建
+                runCatching { nm.deleteNotificationChannel(id) }
+                    .onFailure { WeLogger.w(TAG, "delete stale ringtone channel $id failed: ${it.message}") }
+            }
             val ch = NotificationChannel(id, ringtoneChannelName(soundUri), NotificationManager.IMPORTANCE_HIGH)
                 .apply {
                     setSound(
-                        Uri.parse(soundUri),
+                        uri,
                         AudioAttributes.Builder()
                             .setUsage(AudioAttributes.USAGE_NOTIFICATION)
                             .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
                             .build()
                     )
+                    enableVibration(true)
+                    setShowBadge(true)
                 }
             nm.createNotificationChannel(ch)
-        }
-        return id
+            id
+        }.onFailure { WeLogger.e(TAG, "create ringtone channel failed: $id", it) }.getOrNull()
+    }
+
+    /** 把铃声 URI 的读权限授予微信进程，尽量保证系统播放端能访问到该音频。 */
+    private fun grantRingtoneReadPermission(soundUri: String) {
+        if (soundUri.isBlank()) return
+        runCatching {
+            val ctx = HostInfo.application
+                val uri = Uri.parse(soundUri)
+                if (uri.scheme == "content") {
+                    // 宿主进程（微信）与当前进程都授予，尽量保证系统播放端能读到该音频
+                    setOf("com.tencent.mm", HostInfo.packageName).forEach { pkg ->
+                        runCatching {
+                            ctx.grantUriPermission(pkg, uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                        }
+                    }
+                }
+        }.onFailure { WeLogger.w(TAG, "grant uri permission failed: ${it.message}") }
     }
 
     private fun ringtoneChannelName(soundUri: String): String {
