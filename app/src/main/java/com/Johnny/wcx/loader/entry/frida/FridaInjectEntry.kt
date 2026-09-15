@@ -5,6 +5,7 @@ import android.app.ActivityThread
 import android.util.Log
 import androidx.annotation.Keep
 import com.Johnny.wcx.loader.entry.common.ModuleLoader
+import com.Johnny.wcx.utils.WeLogger
 import java.io.File
 import java.lang.reflect.InvocationTargetException
 import java.lang.reflect.Method

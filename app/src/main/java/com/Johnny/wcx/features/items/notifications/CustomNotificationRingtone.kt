@@ -200,8 +200,8 @@ object CustomNotificationRingtone : ClickableFeature(), IResolveDex {
         if (diagLogged.add(key)) WeLogger.w(TAG, message())
     }
 
-    // ThreadLocal：dealNotify 存入 convWxId，build() before 阶段读取并写入 Builder，after 阶段消费
-    private val currentPendingRule = ThreadLocal<RingtoneRule?>()
+    // Thread-safe: dealNotify 存入 convWxId，build() before 阶段读取并写入 Builder，after 阶段消费
+    private val currentPendingRule = java.util.concurrent.atomic.AtomicReference<RingtoneRule?>(null)
 
     /**
      * 两步 Hook：
