@@ -87,7 +87,7 @@ val javaccGen = tasks.register<JavaExec>("javaccGen") {
 }
 
 dependencies {
-    add("pgccTool", "com.helger:parser-generator-cc:2.0.1")
+    add("pgccTool", "com.helger:parser-generator-cc:3.0.0")
     implementation("com.jakewharton.android.repackaged:dalvik-dx:16.0.1")
     testImplementation("org.junit.jupiter:junit-jupiter:6.1.2")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
