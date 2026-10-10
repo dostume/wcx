@@ -32,7 +32,7 @@ jobs:
       contents: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           # 完整历史: 合并上游需要共同祖先, build.gradle.kts 也要 git rev-parse
           fetch-depth: 0
