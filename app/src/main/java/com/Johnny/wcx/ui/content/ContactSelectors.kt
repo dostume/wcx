@@ -297,13 +297,33 @@ fun BaseContactSelector(
 
     var filtersExpanded by remember { mutableStateOf(true) }
 
-    var sortMode by remember { mutableStateOf(SortMode.ALPHABETICAL) }
+    // 默认按最近聊天时间排序 (最近聊天靠前), 用户可随时切回字母序。
+    var sortMode by remember { mutableStateOf(SortMode.LAST_MESSAGE_TIME) }
     var sortReversed by remember { mutableStateOf(false) }
     var lastMessageTimes by remember { mutableStateOf<Map<String, Long>?>(null) }
     var isSortLoading by remember { mutableStateOf(false) }
 
+    // 默认排序依赖会话时间数据, 这里在首次组合时拉一次。
+    // 拉不到 (数据库尚未就绪) 时不打扰用户, 由下面的 effectiveSortMode 静默降级。
+    LaunchedEffect(Unit) {
+        if (lastMessageTimes != null) return@LaunchedEffect
+        val times = withContext(Dispatchers.IO) {
+            if (WeDatabaseApi.isReady) WeDatabaseApi.getLastMessageTimes() else null
+        }
+        // 空结果同样视为失败: 否则会按"所有会话时间相同"排出一个随意的顺序。
+        if (!times.isNullOrEmpty()) lastMessageTimes = times
+    }
+
+    // 时间数据还没到位时无法排序, 先按字母序渲染, 数据到达后自动切到时间序。
+    val effectiveSortMode =
+        if (sortMode == SortMode.LAST_MESSAGE_TIME && lastMessageTimes == null) SortMode.ALPHABETICAL
+        else sortMode
+
     fun switchSortMode(target: SortMode) {
-        if (target == sortMode || isSortLoading) return
+        if (isSortLoading) return
+        // 已经是目标模式就无需处理; 唯一例外是按时间排序但时间数据缺失
+        // (首次自动拉取失败时), 这种情况要允许再次触发拉取。
+        if (target == sortMode && (target != SortMode.LAST_MESSAGE_TIME || lastMessageTimes != null)) return
         if (target == SortMode.ALPHABETICAL) {
             sortMode = SortMode.ALPHABETICAL
             return
@@ -447,8 +467,8 @@ fun BaseContactSelector(
         }
     }
 
-    val groupedContacts = remember(displayedContacts, initialCache, selectionKey, sortMode, sortReversed, lastMessageTimes) {
-        if (sortMode == SortMode.LAST_MESSAGE_TIME) {
+    val groupedContacts = remember(displayedContacts, initialCache, selectionKey, effectiveSortMode, sortReversed, lastMessageTimes) {
+        if (effectiveSortMode == SortMode.LAST_MESSAGE_TIME) {
             val times = lastMessageTimes ?: emptyMap()
             val sorted = if (sortReversed) {
                 displayedContacts.sortedBy { times[it.wxId] ?: Long.MIN_VALUE }
@@ -887,7 +907,7 @@ fun BaseContactSelector(
                             } else {
                                 alphabet
                             }
-                            if (sortMode == SortMode.ALPHABETICAL) displayAlphabet.forEach { letter ->
+                            if (effectiveSortMode == SortMode.ALPHABETICAL) displayAlphabet.forEach { letter ->
                                 val isAvailable = groupedContacts.containsKey(letter)
                                 Text(
                                     text = if (letter == SELECTED_SECTION_KEY) "✓" else letter,
