@@ -116,7 +116,7 @@ jobs:
         # 上游有更新 (或手动强制) 时发布 Release, tag 固定 v273 (应用 versionCode),
         # 重复发布会更新既有 Release, 不会堆积重复项
         if: steps.merge.outputs.changed == 'true' || inputs.force_release == true
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: v273
           name: v273
