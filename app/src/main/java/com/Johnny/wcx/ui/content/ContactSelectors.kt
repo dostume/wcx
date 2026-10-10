@@ -8,6 +8,8 @@ import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -56,6 +58,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil3.compose.AsyncImage
 import com.composables.icons.materialsymbols.MaterialSymbols
@@ -152,7 +155,9 @@ fun BaseContactSelector(
     isSelected: (IWeContact) -> Boolean,
     dismissButtonText: String? = null,
     avatarModelProvider: ((IWeContact) -> Any)? = { it.avatarUrl },
-    subtitleProvider: ((IWeContact) -> String)? = { it.wxId },
+    // 默认不再显示副标题 (原来这里取 wxId): 联系人列表主打昵称,
+    // 有额外信息要展示的调用方自己传 subtitleProvider。
+    subtitleProvider: ((IWeContact) -> String)? = null,
     leadingControl: @Composable (LazyItemScope.(IWeContact) -> Unit)? = null,
     trailingControl: @Composable (LazyItemScope.(IWeContact) -> Unit)? = null,
     onItemClick: (IWeContact) -> Unit,
@@ -167,17 +172,7 @@ fun BaseContactSelector(
     val coroutineScope = rememberCoroutineScope()
     val alphabet = remember { listOf(SELECTED_SECTION_KEY) + ('A'..'Z').map { it.toString() } + "#" }
 
-    val transliterator = remember {
-        try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                Transliterator.getInstance("Han-Latin; Any-Latin; Latin-ASCII")
-            } else {
-                null
-            }
-        } catch (_: Exception) {
-            null
-        }
-    }
+    val transliterator = remember { createTransliterator() }
 
     // 分组字母缓存 (首字符 -> A-Z / #)。
     // ICU 的 Transliterator 很慢, 而 groupedContacts 会在每次搜索按键时对整个列表重跑一遍;
@@ -528,14 +523,27 @@ fun BaseContactSelector(
                         value = searchQuery,
                         onValueChange = onSearchQueryChange,
                         modifier = Modifier.weight(1f),
-                        placeholder = { Text("搜索昵称或微信号") },
+                        placeholder = {
+                            Text("昵称 / 微信号, 支持拼音首字母", style = MaterialTheme.typography.bodyMedium)
+                        },
                         leadingIcon = {
                             Icon(
                                 MaterialSymbols.Outlined.Search,
                                 contentDescription = "搜索联系人",
                             )
                         },
-                        singleLine = true
+                        trailingIcon = {
+                            if (searchQuery.isNotEmpty()) {
+                                IconButton(onClick = { onSearchQueryChange("") }) {
+                                    Icon(
+                                        MaterialSymbols.Outlined.Deselect,
+                                        contentDescription = "清空搜索",
+                                    )
+                                }
+                            }
+                        },
+                        singleLine = true,
+                        shape = RoundedCornerShape(14.dp)
                     )
                     IconButton(onClick = { filtersExpanded = !filtersExpanded }) {
                         Icon(
@@ -633,7 +641,8 @@ fun BaseContactSelector(
                                             FilterChip(
                                                 selected = isSelected,
                                                 onClick = { selectedLabelName = null },
-                                                label = { Text("全部", style = MaterialTheme.typography.labelSmall) }
+                                                label = { Text("全部", style = MaterialTheme.typography.labelSmall) },
+                                                modifier = Modifier.height(28.dp)
                                             )
                                         }
                                         items(availableLabels) { label ->
@@ -642,7 +651,8 @@ fun BaseContactSelector(
                                             FilterChip(
                                                 selected = isSelected,
                                                 onClick = { selectedLabelName = if (isSelected) null else label.labelName },
-                                                label = { Text(label.labelName, style = MaterialTheme.typography.labelSmall) }
+                                                label = { Text(label.labelName, style = MaterialTheme.typography.labelSmall) },
+                                                modifier = Modifier.height(28.dp)
                                             )
                                         }
                                     } else {
@@ -667,6 +677,7 @@ fun BaseContactSelector(
                                                     }
                                                 },
                                                 label = { Text("全部", style = MaterialTheme.typography.labelSmall) },
+                                                modifier = Modifier.height(28.dp)
                                             )
                                         }
                                         items(options, key = { it.id }) { option ->
@@ -683,6 +694,7 @@ fun BaseContactSelector(
                                                     }
                                                 },
                                                 label = { Text(option.name, style = MaterialTheme.typography.labelSmall) },
+                                                modifier = Modifier.height(28.dp)
                                             )
                                         }
                                     }
@@ -823,25 +835,43 @@ fun BaseContactSelector(
                         LazyColumn(
                             state = listState,
                             modifier = Modifier.weight(1f),
-                            contentPadding = PaddingValues(vertical = 4.dp)
+                            contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp)
                         ) {
                             groupedContacts.forEach { (letter, contactsInGroup) ->
                                 stickyHeader(key = "header_$letter") {
                                     Surface(
                                         modifier = Modifier.fillMaxWidth(),
-                                        color = MaterialTheme.colorScheme.surfaceContainerHighest
+                                        color = MaterialTheme.colorScheme.surface
                                     ) {
-                                        Text(
-                                            text = when (letter) {
-                                                SELECTED_SECTION_KEY -> "已选"
-                                                NEWEST_SECTION_KEY -> "新-旧"
-                                                OLDEST_SECTION_KEY -> "旧-新"
-                                                else -> letter
-                                            },
-                                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
-                                            style = MaterialTheme.typography.titleSmall,
-                                            color = MaterialTheme.colorScheme.primary
-                                        )
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Text(
+                                                text = when (letter) {
+                                                    SELECTED_SECTION_KEY -> "已选"
+                                                    NEWEST_SECTION_KEY -> "新-旧"
+                                                    OLDEST_SECTION_KEY -> "旧-新"
+                                                    else -> letter
+                                                },
+                                                modifier = Modifier
+                                                    .background(
+                                                        color = MaterialTheme.colorScheme.primaryContainer,
+                                                        shape = RoundedCornerShape(8.dp)
+                                                    )
+                                                    .padding(horizontal = 10.dp, vertical = 3.dp),
+                                                style = MaterialTheme.typography.labelMedium,
+                                                color = MaterialTheme.colorScheme.onPrimaryContainer
+                                            )
+                                            Spacer(modifier = Modifier.width(10.dp))
+                                            Text(
+                                                text = "${contactsInGroup.size}",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                                            )
+                                            Spacer(modifier = Modifier.width(10.dp))
+                                            HorizontalDivider(modifier = Modifier.weight(1f))
+                                        }
                                     }
                                 }
 
@@ -849,17 +879,29 @@ fun BaseContactSelector(
                                     items = contactsInGroup,
                                     key = { it.wxId }
                                 ) { contact ->
+                                    val selected = isSelected(contact)
                                     Row(
                                         modifier = Modifier
                                             .animateItem()
                                             .fillMaxWidth()
+                                            .then(
+                                                if (selected) {
+                                                    Modifier.background(
+                                                        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.28f),
+                                                        shape = RoundedCornerShape(12.dp)
+                                                    )
+                                                } else {
+                                                    Modifier
+                                                }
+                                            )
+                                            .clip(RoundedCornerShape(12.dp))
                                             .clickable { onItemClick(contact) }
-                                            .padding(vertical = 12.dp, horizontal = 4.dp),
+                                            .padding(vertical = 10.dp, horizontal = 10.dp),
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
                                         if (leadingControl != null) {
                                             leadingControl(contact)
-                                            Spacer(modifier = Modifier.width(12.dp))
+                                            Spacer(modifier = Modifier.width(10.dp))
                                         }
 
                                         AsyncImage(
@@ -867,8 +909,9 @@ fun BaseContactSelector(
                                             contentDescription = null,
                                             contentScale = ContentScale.Crop,
                                             modifier = Modifier
-                                                .size(32.dp)
-                                                .clip(RoundedCornerShape(6.dp)),
+                                                .size(44.dp)
+                                                .clip(RoundedCornerShape(14.dp))
+                                                .background(MaterialTheme.colorScheme.surfaceVariant),
                                             imageLoader = GlobalImageLoader
                                         )
                                         Spacer(modifier = Modifier.width(12.dp))
@@ -876,13 +919,21 @@ fun BaseContactSelector(
                                         Column(modifier = Modifier.weight(1f)) {
                                             Text(
                                                 text = contact.displayName,
-                                                style = MaterialTheme.typography.bodyLarge
+                                                style = MaterialTheme.typography.bodyLarge,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
                                             )
-                                            Text(
-                                                text = subtitleProvider?.invoke(contact) ?: contact.wxId,
-                                                style = MaterialTheme.typography.bodySmall,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                                            )
+                                            // 没有额外副标题时只展示昵称, 不再回落到 wxId
+                                            subtitleProvider?.let { provider ->
+                                                Spacer(modifier = Modifier.height(2.dp))
+                                                Text(
+                                                    text = provider(contact),
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                            }
                                         }
 
                                         if (trailingControl != null) {
@@ -972,9 +1023,10 @@ fun SingleContactSelector(
     var selectedWxId by remember { mutableStateOf(initialSelectedWxId) }
 
     val sortedContacts = remember(contacts) { sortContactsByDisplayName(contacts) }
+    val searchIndex = rememberNameSearchIndex(contacts)
 
-    val filteredContacts = remember(searchQuery, sortedContacts) {
-        filterSortedContacts(sortedContacts, searchQuery)
+    val filteredContacts = remember(searchQuery, sortedContacts, searchIndex) {
+        filterSortedContacts(sortedContacts, searchQuery, searchIndex)
     }
 
     BaseContactSelector(
@@ -1013,9 +1065,10 @@ fun ContactsSelector(
     var selectedWxIds by remember { mutableStateOf(initialSelectedWxIds) }
 
     val sortedContacts = remember(contacts) { sortContactsByDisplayName(contacts) }
+    val searchIndex = rememberNameSearchIndex(contacts)
 
-    val filteredContacts = remember(searchQuery, sortedContacts) {
-        filterSortedContacts(sortedContacts, searchQuery)
+    val filteredContacts = remember(searchQuery, sortedContacts, searchIndex) {
+        filterSortedContacts(sortedContacts, searchQuery, searchIndex)
     }
 
     BaseContactSelector(
@@ -1098,12 +1151,109 @@ private fun sortContactsByDisplayName(contacts: List<IWeContact>): List<IWeConta
 }
 
 /**
- * 在已排好序的列表上过滤。过滤保序, 所以结果与"先过滤再排序"完全一致。
+ * 昵称的三个搜索维度: 原文 / 拼音全拼 / 拼音首字母缩写。
+ * "张伟" -> raw="张伟", fullPinyin="zhangwei", initials="zw",
+ * 于是搜 "张"、"伟"、"zhang"、"zw" 都能命中。
  */
-private fun filterSortedContacts(sorted: List<IWeContact>, query: String): List<IWeContact> {
-    if (query.isEmpty()) return sorted
-    return sorted.filter {
-        it.displayName.contains(query, ignoreCase = true) ||
-                it.wxId.contains(query, ignoreCase = true)
+private class NameSearchKey(
+    val raw: String,
+    val fullPinyin: String,
+    val initials: String,
+)
+
+/**
+ * Han-Latin 转换器。低于 Android 10 没有 [Transliterator], 返回 null:
+ * 此时昵称只能按原文匹配, 拼音搜索自动失效但不能连带拖垮整个搜索。
+ */
+private fun createTransliterator(): Transliterator? =
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        runCatching { Transliterator.getInstance("Han-Latin; Any-Latin; Latin-ASCII") }.getOrNull()
+    } else {
+        null
+    }
+
+// CJK 基本区 / 扩展 A / 兼容表意文字; 只对汉字走 ICU, 其余字符直接拼进去。
+private fun isHan(ch: Char): Boolean =
+    ch in '\u4e00'..'\u9fff' || ch in '\u3400'..'\u4dbf' || ch in '\uf900'..'\ufaff'
+
+/**
+ * 给每个联系人算出 [NameSearchKey]。
+ *
+ * 逐字符转换很贵, 但不同汉字的数量远小于联系人数量, 这里用 `charPinyin` 按字缓存;
+ * 整个索引在 IO 线程构建一次, 之后每次按键都只是纯字符串包含判断。
+ */
+private fun buildNameSearchIndex(contacts: List<IWeContact>): Map<String, NameSearchKey> {
+    val transliterator = createTransliterator()
+    val index = HashMap<String, NameSearchKey>(contacts.size)
+    val charPinyin = HashMap<Char, String>()
+    for (contact in contacts) {
+        val name = contact.displayName
+        val full = StringBuilder(name.length * 3)
+        val initials = StringBuilder(name.length)
+        for (ch in name) {
+            if (transliterator != null && isHan(ch)) {
+                val pinyin = charPinyin.getOrPut(ch) {
+                    // ICU Transliterator 不是线程安全的
+                    synchronized(transliterator) { transliterator.transliterate(ch.toString()) }.trim()
+                }
+                if (pinyin.isNotEmpty()) {
+                    full.append(pinyin)
+                    initials.append(pinyin.first())
+                    continue
+                }
+            }
+            // 英文/数字/符号原样进入两个字段: "John" 既能按 "john" 也能按首字母串搜到
+            if (!ch.isWhitespace()) {
+                full.append(ch)
+                initials.append(ch)
+            }
+        }
+        index[contact.wxId] = NameSearchKey(
+            raw = name,
+            fullPinyin = full.toString().lowercase(),
+            initials = initials.toString().lowercase(),
+        )
+    }
+    return index
+}
+
+/**
+ * 在 IO 线程构建昵称搜索索引。索引就绪前返回空表, 此时 [filterSortedContacts]
+ * 会退化为纯原文匹配, 不会让用户在索引构建完成的那一瞬间搜不到东西。
+ */
+@Composable
+private fun rememberNameSearchIndex(contacts: List<IWeContact>): Map<String, NameSearchKey> {
+    var index by remember { mutableStateOf(emptyMap<String, NameSearchKey>()) }
+    LaunchedEffect(contacts) {
+        val built = withContext(Dispatchers.IO) { buildNameSearchIndex(contacts) }
+        index = built
+    }
+    return index
+}
+
+/**
+ * 在已排好序的列表上按昵称过滤。过滤保序, 所以结果与"先过滤再排序"完全一致。
+ *
+ * [query] 大小写不敏感; [index] 为空 (尚未就绪或系统不支持 ICU) 时退化成昵称原文匹配。
+ */
+private fun filterSortedContacts(
+    sorted: List<IWeContact>,
+    query: String,
+    index: Map<String, NameSearchKey> = emptyMap(),
+): List<IWeContact> {
+    val trimmed = query.trim()
+    if (trimmed.isEmpty()) return sorted
+    val lowered = trimmed.lowercase()
+    return sorted.filter { contact ->
+        val key = index[contact.wxId]
+        val matchesName = if (key == null) {
+            contact.displayName.contains(lowered, ignoreCase = true)
+        } else {
+            key.raw.contains(lowered, ignoreCase = true) ||
+                    key.fullPinyin.contains(lowered) ||
+                    key.initials.contains(lowered)
+        }
+        // 昵称优先, 微信号仅作精确查找的兜底
+        matchesName || contact.wxId.contains(lowered, ignoreCase = true)
     }
 }
