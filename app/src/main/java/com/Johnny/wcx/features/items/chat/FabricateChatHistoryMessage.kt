@@ -269,7 +269,7 @@ private fun ChatRecordXmlGeneratorDialog(
                         row = row,
                         contactsByWxId = contactsByWxId,
                         onPickSender = {
-                            showComposeDialog(context) {
+                            showComposeDialog(context, fullScreen = true) {
                                 SingleContactSelector(
                                     title = "选择发送者",
                                     contacts = contacts,
@@ -322,7 +322,7 @@ private fun ChatRecordXmlGeneratorDialog(
                         rows = rows.map { it.toSnapshot() },
                         contacts = contacts
                     )
-                    showComposeDialog(context) {
+                    showComposeDialog(context, fullScreen = true) {
                         SingleContactSelector(
                             title = "选择发送目标",
                             contacts = contacts,

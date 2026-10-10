@@ -140,7 +140,7 @@ object RedPacketGroupMemberFilter {
     }
 
     private fun showAddGroupDialog(context: Context, onAdded: () -> Unit) {
-        showComposeDialog(context) {
+        showComposeDialog(context, fullScreen = true) {
             SingleContactSelector(
                 title = "选择群聊",
                 contacts = remember { WeDatabaseApi.getGroups() },

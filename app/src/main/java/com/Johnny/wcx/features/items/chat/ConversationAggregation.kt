@@ -747,7 +747,7 @@ object ConversationAggregation : ClickableFeature(),
             }
         }.getOrDefault(emptyList())
 
-        showComposeDialog(context) {
+        showComposeDialog(context, fullScreen = true) {
             FolderShareTargetSelector(
                 contacts = contacts,
                 onDismiss = onDismiss,

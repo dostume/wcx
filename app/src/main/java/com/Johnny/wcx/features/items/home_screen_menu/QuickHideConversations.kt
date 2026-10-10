@@ -81,7 +81,7 @@ object QuickHideConversations : SwitchFeature(), WeHomeScreenPopupMenuApi.IMenuI
     private fun showHideDialog(activity: ComponentActivity) {
         val contacts = WeDatabaseApi.getFriends() + WeDatabaseApi.getGroups()
 
-        showComposeDialog(activity) {
+        showComposeDialog(activity, fullScreen = true) {
             ContactsSelector(
                 title = "选择要隐藏的对话",
                 contacts = contacts,

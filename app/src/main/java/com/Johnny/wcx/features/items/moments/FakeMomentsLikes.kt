@@ -88,7 +88,7 @@ object FakeMomentsLikes : SwitchFeature(), WeMomentsContextMenuApi.IMenuItemsPro
                                 Button(
                                     onClick = {
                                         onDismiss()
-                                        showComposeDialog(moment.activity) {
+                                        showComposeDialog(moment.activity, fullScreen = true) {
                                             ContactsSelector(
                                                 title = "选择伪点赞用户",
                                                 contacts = contacts,

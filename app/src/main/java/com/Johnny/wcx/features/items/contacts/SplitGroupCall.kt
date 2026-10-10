@@ -317,7 +317,7 @@ object SplitGroupCall : ClickableFeature(), IContactInfoProvider, IResolveDex {
     }
 
     override fun onClick(context: ComponentActivity) {
-        showComposeDialog(context) {
+        showComposeDialog(context, fullScreen = true) {
             SingleContactSelector(
                 ("分裂群组通话"),
                 WeDatabaseApi.getGroups(),

@@ -37,7 +37,7 @@ object SecretFriendManager : ClickableFeature() {
     /** 打开密友名单选择器；任意 Context 可用（供 #my# 面板等入口复用）。 */
     fun openSelector(context: android.content.Context) {
         val regularContacts = WeDatabaseApi.getFriends() + WeDatabaseApi.getGroups()
-        showComposeDialog(context) {
+        showComposeDialog(context, fullScreen = true) {
             ContactsSelector(
                 title = "选择密友",
                 contacts = regularContacts,

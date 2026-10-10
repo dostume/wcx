@@ -3,6 +3,7 @@ package com.Johnny.wcx.ui.content
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -24,6 +25,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 
@@ -38,15 +40,19 @@ fun AlertDialogContent(
     dismissButton: (@Composable () -> Unit)? = null
 ) {
     Surface(
-        shape = if (fullScreen) MaterialTheme.shapes.small else MaterialTheme.shapes.extraLarge,
-        tonalElevation = 6.dp,
+        // 全屏时贴满宿主界面: 不留圆角与阴影, 视觉上像一个原生页面而不是悬浮对话框
+        shape = if (fullScreen) RectangleShape else MaterialTheme.shapes.extraLarge,
+        tonalElevation = if (fullScreen) 0.dp else 6.dp,
         modifier = modifier
-            .fillMaxWidth()
-            .then(if (fullScreen) Modifier.fillMaxHeight() else Modifier.wrapContentHeight())
+            .fillMaxSize()
+            .then(if (fullScreen) Modifier else Modifier.wrapContentHeight())
     ) {
         Column(
             modifier = Modifier
-                .padding(if (fullScreen) 12.dp else 20.dp)
+                .padding(
+                    if (fullScreen) PaddingValues(start = 8.dp, end = 8.dp, top = 4.dp, bottom = 8.dp)
+                    else PaddingValues(20.dp)
+                )
                 .then(if (fullScreen) Modifier.fillMaxSize() else Modifier),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
@@ -81,7 +87,8 @@ fun AlertDialogContent(
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .weight(1f, fill = false)
+                        // 全屏时占满剩余高度, 列表才能撑到屏幕底部
+                        .weight(1f, fill = fullScreen)
                 ) {
                     CompositionLocalProvider(
                         LocalTextStyle provides bodyStyle,

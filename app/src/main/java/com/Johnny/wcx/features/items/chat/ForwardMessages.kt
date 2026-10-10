@@ -72,7 +72,7 @@ object ForwardMessages : SwitchFeature(),
             val contacts = WeDatabaseApi.getFriends() + WeDatabaseApi.getGroups()
 
             withContext(Dispatchers.Main) {
-                showComposeDialog(view.context) {
+                showComposeDialog(view.context, fullScreen = true) {
                     ContactsSelector(
                         title = "选择转发对象",
                         contacts = contacts,

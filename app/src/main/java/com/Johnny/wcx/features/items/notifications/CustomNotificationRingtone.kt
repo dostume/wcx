@@ -444,7 +444,7 @@ object CustomNotificationRingtone : ClickableFeature(), IResolveDex {
     // ─── 设置界面 ─────────────────────────────────────────────────────────────
 
     override fun onClick(context: ComponentActivity) {
-        showComposeDialog(context) {
+        showComposeDialog(context, fullScreen = true) {
             RulesDialog(onDismiss = onDismiss)
         }
     }

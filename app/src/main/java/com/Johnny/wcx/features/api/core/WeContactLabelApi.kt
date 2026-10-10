@@ -73,26 +73,120 @@ object WeContactLabelApi : ApiFeature(), IResolveDex {
         }
     }
 
+    // rcontact 里存放标签 id 的列名在不同微信版本上并不一致 (历史上是 contactLabelIds)。
+    // 写死列名的话, 版本不匹配时 SQL 直接抛错并被兜底吞成空列表 —— 表现就是
+    // "标签列表能显示, 但选中某个标签后一个联系人都选不到"。这里运行时解析一次并缓存。
+    private val KNOWN_LABEL_COLUMNS = listOf(
+        "contactLabelIds",
+        "contactLabelIDList",
+        "contactLabels",
+        "labelIds",
+        "labelIDList",
+    )
+    // 分隔方式同样不统一 (逗号/分号/空格, 有的版本还带方括号), 统一按非数字切分。
+    private val LABEL_ID_SEPARATOR = Regex("[^0-9]+")
+
+    private var labelColumnResolved = false
+    private var cachedLabelColumn: String? = null
+
+    private fun tableColumns(table: String): List<String> {
+        val columns = mutableListOf<String>()
+        WeDatabaseApi.rawQuery("PRAGMA table_info($table)").use { cursor ->
+            val index = cursor.getColumnIndex("name")
+            if (index < 0) return emptyList()
+            while (cursor.moveToNext()) columns.add(cursor.getString(index))
+        }
+        return columns
+    }
+
+    private fun resolveContactLabelColumn(): String? {
+        if (labelColumnResolved) return cachedLabelColumn
+        labelColumnResolved = true
+        val available = runCatching { tableColumns("rcontact") }.getOrNull().orEmpty()
+        val hit = available.firstOrNull { col ->
+            KNOWN_LABEL_COLUMNS.any { it.equals(col, ignoreCase = true) }
+        } ?: available.firstOrNull { col ->
+            // 退一步: 名字同时含 label 与 id 的列
+            val lower = col.lowercase()
+            lower.contains("label") && lower.contains("id")
+        } ?: available.firstOrNull { col -> col.lowercase().contains("label") }
+        cachedLabelColumn = hit
+        WeLogger.i(TAG, "rcontact 标签列解析结果 = $hit")
+        return hit
+    }
+
+    private fun String.matchesLabelId(labelId: Int): Boolean =
+        split(LABEL_ID_SEPARATOR).any { it.toIntOrNull() == labelId }
+
     /**
      * Get contacts belonging to a specific label, by label ID.
+     *
+     * 返回的 username 与 `WeContact.wxId` 同源 (都是 rcontact.username), 可直接用于筛选。
+     * 解析不到标签列时会继续尝试标签关系表, 都失败才返回空列表。
      */
     fun getContactsByLabelId(labelId: Int): List<String> {
-        return try {
-            val raw = WeDatabaseApi.rawQuery(
-                "SELECT username FROM rcontact WHERE ',' || contactLabelIds || ',' LIKE ?",
-                arrayOf("%,$labelId,%")
-            )
-            val wxids = mutableListOf<String>()
-            raw.use {
-                while (it.moveToNext()) {
-                    wxids.add(it.getString(0))
+        val column = resolveContactLabelColumn()
+        if (column != null) {
+            runCatching {
+                val wxids = mutableListOf<String>()
+                WeDatabaseApi.rawQuery(
+                    "SELECT username, $column FROM rcontact WHERE $column IS NOT NULL AND $column != ''"
+                ).use { cursor ->
+                    while (cursor.moveToNext()) {
+                        val value = cursor.getString(1) ?: continue
+                        if (value.matchesLabelId(labelId)) wxids.add(cursor.getString(0))
+                    }
                 }
+                return wxids
+            }.onFailure { e ->
+                WeLogger.w(TAG, "getContactsByLabelId failed on column=$column", e)
             }
-            wxids
-        } catch (e: Exception) {
-            WeLogger.e(TAG, "getContactsByLabelId failed", e)
-            emptyList()
         }
+        return getContactsByLabelIdFromRelationTable(labelId)
+    }
+
+    /**
+     * 兜底: 有些版本把标签关系单独放在一张表里。扫描名字含 label 的表 (排除 ContactLabel 本身),
+     * 取其中同时具备"标签列"与"用户名列"的那种结构来解析成员。
+     */
+    private fun getContactsByLabelIdFromRelationTable(labelId: Int): List<String> {
+        val wxids = mutableListOf<String>()
+        val tables = runCatching {
+            val found = mutableListOf<String>()
+            WeDatabaseApi.rawQuery(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND lower(name) LIKE '%label%'"
+            ).use { cursor ->
+                while (cursor.moveToNext()) found.add(cursor.getString(0))
+            }
+            found
+        }.getOrNull().orEmpty()
+
+        for (table in tables) {
+            if (table.equals("ContactLabel", ignoreCase = true)) continue
+            runCatching {
+                val columns = tableColumns(table)
+                val labelColumn = columns.firstOrNull { it.lowercase().contains("label") } ?: return@runCatching
+                val userColumn = columns.firstOrNull {
+                    val lower = it.lowercase()
+                    lower == "username" || lower == "wxid" || lower.contains("username")
+                } ?: return@runCatching
+                WeDatabaseApi.rawQuery(
+                    "SELECT $userColumn, $labelColumn FROM $table WHERE $labelColumn IS NOT NULL AND $labelColumn != ''"
+                ).use { cursor ->
+                    while (cursor.moveToNext()) {
+                        val value = cursor.getString(1) ?: continue
+                        if (value.matchesLabelId(labelId)) wxids.add(cursor.getString(0))
+                    }
+                }
+                if (wxids.isNotEmpty()) {
+                    WeLogger.i(TAG, "标签成员改由关系表 $table 解析得到")
+                    return wxids
+                }
+            }.onFailure { e ->
+                WeLogger.w(TAG, "failed to read label relation table=$table", e)
+            }
+        }
+        return wxids
     }
 
     /**
@@ -103,8 +197,9 @@ object WeContactLabelApi : ApiFeature(), IResolveDex {
      */
     fun getLabelNamesForContact(username: String): List<String> {
         return try {
+            val column = resolveContactLabelColumn() ?: return emptyList()
             val labelIds = WeDatabaseApi.rawQuery(
-                "SELECT contactLabelIds FROM rcontact WHERE username = ?",
+                "SELECT $column FROM rcontact WHERE username = ?",
                 arrayOf(username)
             ).use {
                 if (it.moveToFirst()) it.getString(0) else null
@@ -113,7 +208,7 @@ object WeContactLabelApi : ApiFeature(), IResolveDex {
             if (labelIds.isNullOrBlank()) return emptyList()
 
             val idToName = getAllLabels().associate { it.labelId to it.labelName }
-            labelIds.split(",")
+            labelIds.split(LABEL_ID_SEPARATOR)
                 .mapNotNull { it.trim().toIntOrNull() }
                 .mapNotNull { idToName[it] }
         } catch (e: Exception) {

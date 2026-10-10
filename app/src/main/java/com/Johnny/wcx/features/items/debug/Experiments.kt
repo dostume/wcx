@@ -135,7 +135,7 @@ object Experiments : ClickableFeature() {
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .clickable {
-                                        showComposeDialog(context) {
+                                        showComposeDialog(context, fullScreen = true) {
                                             SingleContactSelector(
                                                 title = "选择目标联系人",
                                                 contacts = contacts,

@@ -54,7 +54,7 @@ object SplitGroupChats : ClickableFeature() {
     }
 
     override fun onClick(context: ComponentActivity) {
-        showComposeDialog(context) {
+        showComposeDialog(context, fullScreen = true) {
             SingleContactSelector(
                 "分裂群组",
                 WeDatabaseApi.getGroups(),

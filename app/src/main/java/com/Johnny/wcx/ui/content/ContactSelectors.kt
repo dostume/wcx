@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -127,6 +128,17 @@ private data class ContactFilterOption(
     val wxIds: Set<String>,
 )
 
+/**
+ * 联系人选择器里使用的名字。
+ *
+ * 微信自己的 `displayName` 是 "备注 (昵称)" 的拼合形式, 这里只取本人设置的备注,
+ * 没有备注才回落到昵称 —— 列表展示、搜索、排序、分组首字母必须统一用这一个来源,
+ * 否则会出现"按备注排的序, 但搜索命中的是昵称"这种错位的观感。
+ * 群聊/公众号没有备注字段, 直接用它们的 nickname。
+ */
+private val IWeContact.selectorName: String
+    get() = (this as? WeContact)?.remarkName?.takeIf { it.isNotBlank() } ?: nickname
+
 enum class SortMode(val icon: ImageVector) {
     ALPHABETICAL(MaterialSymbols.Outlined.Sort_by_alpha),
     LAST_MESSAGE_TIME(MaterialSymbols.Outlined.Schedule);
@@ -214,7 +226,7 @@ fun BaseContactSelector(
         withContext(Dispatchers.IO) {
             // 先在 IO 线程把分组字母算好, 主线程之后每次按键都只命中缓存。
             // (之后新增的联系人会在 initialOf 里按需补算, 结果一致。)
-            runCatching { allContacts.forEach { initialOf(it.displayName) } }
+            runCatching { allContacts.forEach { initialOf(it.selectorName) } }
 
             try {
                 if (WeDatabaseApi.isReady) {
@@ -479,7 +491,7 @@ fun BaseContactSelector(
             }
         } else {
             displayedContacts.groupBy { contact ->
-                if (isSelected(contact)) SELECTED_SECTION_KEY else initialOf(contact.displayName)
+                if (isSelected(contact)) SELECTED_SECTION_KEY else initialOf(contact.selectorName)
             }.toSortedMap { c1, c2 ->
                 when {
                     c1 == c2 -> 0
@@ -515,7 +527,8 @@ fun BaseContactSelector(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(bottom = 4.dp),
+                        .padding(bottom = 4.dp)
+                        .heightIn(max = 56.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
@@ -523,8 +536,14 @@ fun BaseContactSelector(
                         value = searchQuery,
                         onValueChange = onSearchQueryChange,
                         modifier = Modifier.weight(1f),
+                        // 提示语保持短句, 长文案会让输入框被撑成两行
                         placeholder = {
-                            Text("昵称 / 微信号, 支持拼音首字母", style = MaterialTheme.typography.bodyMedium)
+                            Text(
+                                "搜索备注名",
+                                style = MaterialTheme.typography.bodyMedium,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
                         },
                         leadingIcon = {
                             Icon(
@@ -543,7 +562,8 @@ fun BaseContactSelector(
                             }
                         },
                         singleLine = true,
-                        shape = RoundedCornerShape(14.dp)
+                        maxLines = 1,
+                        shape = RoundedCornerShape(12.dp)
                     )
                     IconButton(onClick = { filtersExpanded = !filtersExpanded }) {
                         Icon(
@@ -918,9 +938,9 @@ fun BaseContactSelector(
 
                                         Column(modifier = Modifier.weight(1f)) {
                                             Text(
-                                                text = contact.displayName,
+                                                text = contact.selectorName,
                                                 style = MaterialTheme.typography.bodyLarge,
-                                                maxLines = 1,
+                                                maxLines = 2,
                                                 overflow = TextOverflow.Ellipsis
                                             )
                                             // 没有额外副标题时只展示昵称, 不再回落到 wxId
@@ -1139,7 +1159,7 @@ private fun sortContactsByDisplayName(contacts: List<IWeContact>): List<IWeConta
     val keyCache = HashMap<String, CollationKey>()
     return contacts
         .map { contact ->
-            val name = contact.displayName
+            val name = contact.selectorName
             SortableContact(
                 contact = contact,
                 isBlankName = name.isBlank(),
@@ -1187,7 +1207,7 @@ private fun buildNameSearchIndex(contacts: List<IWeContact>): Map<String, NameSe
     val index = HashMap<String, NameSearchKey>(contacts.size)
     val charPinyin = HashMap<Char, String>()
     for (contact in contacts) {
-        val name = contact.displayName
+        val name = contact.selectorName
         val full = StringBuilder(name.length * 3)
         val initials = StringBuilder(name.length)
         for (ch in name) {
@@ -1247,7 +1267,7 @@ private fun filterSortedContacts(
     return sorted.filter { contact ->
         val key = index[contact.wxId]
         val matchesName = if (key == null) {
-            contact.displayName.contains(lowered, ignoreCase = true)
+            contact.selectorName.contains(lowered, ignoreCase = true)
         } else {
             key.raw.contains(lowered, ignoreCase = true) ||
                     key.fullPinyin.contains(lowered) ||

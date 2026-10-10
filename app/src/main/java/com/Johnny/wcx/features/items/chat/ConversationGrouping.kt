@@ -1058,7 +1058,7 @@ object ConversationGrouping : ClickableFeature(), IResolveDex {
                             Button(
                                 modifier = Modifier.fillMaxWidth(),
                                 onClick = {
-                                    showComposeDialog(context) {
+                                    showComposeDialog(context, fullScreen = true) {
                                         // Load contacts asynchronously to avoid blocking the main
                                         // thread and causing scrolling lag in the selection list.
                                         var contacts by remember { mutableStateOf<List<IWeContact>?>(null) }
