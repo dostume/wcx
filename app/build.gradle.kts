@@ -12,17 +12,21 @@ plugins {
     alias(libs.plugins.aboutlibraries.android)
 }
 
-fun getCommitCount(): Int {
-    return providers.exec {
-        commandLine("git", "rev-list", "--count", "HEAD")
-    }.standardOutput.asText.get().trim().toInt()
-}
+// Source ZIPs often do not include .git metadata. Do not make a clean export
+// impossible to build just because the repository history is unavailable.
+fun gitValue(vararg args: String): String? = runCatching {
+    providers.exec {
+        commandLine("git", *args)
+        isIgnoreExitValue = true
+    }.let { result ->
+        if (result.result.get().exitValue == 0) result.standardOutput.asText.get().trim().takeIf { it.isNotEmpty() }
+        else null
+    }
+}.getOrNull()
 
-fun getGitHash(): String {
-    return providers.exec {
-        commandLine("git", "rev-parse", "--short", "HEAD")
-    }.standardOutput.asText.get().trim()
-}
+fun getCommitCount(): Int = gitValue("rev-list", "--count", "HEAD")?.toIntOrNull() ?: 0
+
+fun getGitHash(): String = gitValue("rev-parse", "--short", "HEAD") ?: "source-zip"
 
 android {
     namespace = libs.versions.namespace.get()
@@ -36,7 +40,7 @@ android {
     val commitCount = getCommitCount()
     val gitHash = getGitHash()
 
-    // 本地定制：CI 发布时由 sync-upstream 工作流注入本次将发布的 Release tag (v259),
+    // 本地定制：CI 发布时由 sync-upstream 工作流注入本次将发布的 Release tag (v273),
     // 写入 BuildConfig.RELEASE_TAG 供 AppUpdater 判等, 避免重复发布时每次启动都误报新版本。
     // 本地构建为空字符串。
     val ciReleaseTag = providers.environmentVariable("WCX_RELEASE_TAG").orElse("").get()
@@ -47,8 +51,8 @@ android {
         targetSdk = libs.versions.targetSdk.get().toInt()
         // 版本号单一数据源：CI（.github/workflows/ci.yml）直接读取此处，
         // 发版时只需在此递增 versionCode / versionName
-        versionCode = 259
-        versionName = "v259"
+        versionCode = 273
+        versionName = "v273"
 
         buildConfigField("String", "COMMIT_HASH", "\"${gitHash}\"")
         buildConfigField("String", "TAG", "\"WCX\"")

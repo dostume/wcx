@@ -20,6 +20,7 @@ import com.Johnny.wcx.features.api.core.WeApi
 import com.Johnny.wcx.features.api.core.WeAuthApi
 import com.Johnny.wcx.features.api.core.WeContactApi
 import com.Johnny.wcx.features.api.core.WeContactLabelApi
+import com.Johnny.wcx.features.api.core.WeConversationApi
 import com.Johnny.wcx.features.api.core.WeDatabaseApi
 import com.Johnny.wcx.features.api.core.WeGroupApi
 import com.Johnny.wcx.features.api.core.WeMessageApi
@@ -28,8 +29,32 @@ import com.Johnny.wcx.features.api.core.WeServiceApi
 import com.Johnny.wcx.features.api.core.models.MessageType
 import com.Johnny.wcx.features.api.net.WeNetSceneApi
 import com.Johnny.wcx.features.api.ui.WeCurrentConversationApi
+import com.Johnny.wcx.features.api.ui.WeAlertDialogApi
+import com.Johnny.wcx.features.api.ui.WeChatInputBarMenuApi
+import com.Johnny.wcx.features.api.ui.WeChatMessageContextMenuApi
+import com.Johnny.wcx.utils.android.runOnUiThread
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.material3.ListItem
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Switch
+import androidx.compose.material3.Text
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import com.Johnny.wcx.ui.content.AlertDialogContent
+import com.Johnny.wcx.ui.content.Button
+import com.Johnny.wcx.ui.content.DefaultColumn
+import com.Johnny.wcx.ui.content.TextButton
+import com.Johnny.wcx.ui.utils.showComposeDialog
+import com.composables.icons.materialsymbols.MaterialSymbols
+import com.composables.icons.materialsymbols.outlined.Block
 import com.Johnny.wcx.features.api.ui.WeMomentsApi
 import com.Johnny.wcx.utils.AudioUtils
+import com.Johnny.wcx.utils.audio.AudioTransformBridge
 import com.Johnny.wcx.utils.BshSnapshotDecompiler
 import com.Johnny.wcx.utils.HostInfo
 import com.Johnny.wcx.utils.WeLogger
@@ -73,6 +98,11 @@ import kotlin.io.path.nameWithoutExtension
 object JavaEngine {
 
     private const val TAG = "JavaEngine"
+
+    /** 音频转码桥（迁移自 Hchat 的 me.yun.silk 栈）。 */
+    private val audioBridge: AudioTransformBridge by lazy {
+        AudioTransformBridge { msg -> WeLogger.d(TAG, "[audio] $msg") }
+    }
     private const val WA_MODULE_VER = 1418
 
     fun executeAllOnLoad(scripts: Map<String, JavaPlugin>) {
@@ -206,6 +236,30 @@ object JavaEngine {
         }
     }
 
+    /**
+     * 分发给全部脚本的 onProtobufPacket(Object packet) 回调。
+     * packet 为一个 Map，含 direction/uri/cgiId/bytes 字段。
+     */
+    fun executeAllOnProtobufPacket(
+        scripts: Map<String, JavaPlugin>,
+        packet: Any
+    ) {
+        scripts.values.forEach { plugin ->
+            try {
+                val bshMethod = plugin.interpreter.nameSpace.getMethod(
+                    "onProtobufPacket",
+                    arrayOf(Any::class.java)
+                )
+                bshMethod?.apply {
+                    invoke(arrayOf(packet), plugin.interpreter)
+                    WeLogger.i(TAG, "onProtobufPacket executed for script ${plugin.name}")
+                }
+            } catch (e: Exception) {
+                WeLogger.e(TAG, "onProtobufPacket execution failed for script ${plugin.name}", e)
+            }
+        }
+    }
+
     fun executeAllOnNewFriend(
         scripts: Map<String, JavaPlugin>,
         wxid: String,
@@ -279,6 +333,8 @@ object JavaEngine {
 
             // ===== Plugin Info =====
 
+            // scriptDir：脚本根目录（兼容 Hchat 脚本约定，WA 风格变量之一）
+            setVariable("scriptDir", KnownPaths.moduleData.resolve("scripts_java").absolutePathString())
             setVariable("pluginPath", plugin.dir.absolutePathString())
             setVariable("pluginDir", plugin.dir.toFile())
             setVariable("pluginId", plugin.name)
@@ -471,6 +527,617 @@ object JavaEngine {
                     val props = loadConfig(plugin)
                     props.setProperty(key, value.toString())
                     saveConfig(plugin, props)
+                })
+
+            // ===== Contact / Group Info（与 Hchat 脚本 API 同名同形，便于脚本互通）=====
+
+            setMethod(
+                BshMethod("getFriendListInfo", arrayOf()) {
+                    WeDatabaseApi.getFriends().map { c ->
+                        mapOf(
+                            "wxid" to c.wxId,
+                            "nickname" to c.nickname,
+                            "remarkName" to c.remarkName,
+                            "displayName" to c.displayName,
+                            "customWxId" to c.customWxId,
+                            "avatarUrl" to c.avatarUrl,
+                            "type" to c.type,
+                        )
+                    }
+                })
+            setMethod(
+                BshMethod("getFriendInfo", arrayOf(BString)) {
+                    WeDatabaseApi.getFriend(it[0] as String)?.let { c ->
+                        mapOf(
+                            "wxid" to c.wxId,
+                            "nickname" to c.nickname,
+                            "remarkName" to c.remarkName,
+                            "displayName" to c.displayName,
+                            "customWxId" to c.customWxId,
+                            "avatarUrl" to c.avatarUrl,
+                            "type" to c.type,
+                        )
+                    }
+                })
+            setMethod(
+                BshMethod("getGroupListInfo", arrayOf()) {
+                    WeDatabaseApi.getGroups().map { g ->
+                        mapOf(
+                            "roomId" to g.wxId,
+                            "name" to g.nickname,
+                            "displayName" to g.displayName,
+                            "avatarUrl" to g.avatarUrl,
+                        )
+                    }
+                })
+            setMethod(
+                BshMethod("getGroupMemberListInfo", arrayOf(BString)) {
+                    WeDatabaseApi.getGroupMembers(it[0] as String).map { c ->
+                        mapOf(
+                            "wxid" to c.wxId,
+                            "nickname" to c.nickname,
+                            "remarkName" to c.remarkName,
+                            "displayName" to c.displayName,
+                            "avatarUrl" to c.avatarUrl,
+                        )
+                    }
+                })
+            setMethod(
+                BshMethod("getContactLabelListInfo", arrayOf()) {
+                    WeContactLabelApi.getAllLabels().map { l ->
+                        mapOf("labelId" to l.labelId, "labelName" to l.labelName)
+                    }
+                })
+            setMethod(
+                BshMethod("getGroupName", arrayOf(BString)) {
+                    WeDatabaseApi.getGroup(it[0] as String)?.displayName ?: ""
+                })
+            setMethod(
+                BshMethod("getGroupMemberDisplayName", arrayOf(BString, BString)) {
+                    WeDatabaseApi.getGroupMemberDisplayName(it[0] as String, it[1] as String)
+                })
+            setMethod(
+                BshMethod("getAvatarUrl", arrayOf(BString)) {
+                    WeDatabaseApi.getAvatarUrl(it[0] as String)
+                })
+            setMethod(
+                BshMethod("getSelfWxId", arrayOf()) { WeApi.selfWxId })
+            setMethod(
+                BshMethod("findClass", arrayOf(BString)) {
+                    runCatching { ClassLoaders.HOST.loadClass(it[0] as String) }.getOrNull()
+                })
+
+            // ===== Audio transform（迁移自 Hchat 音频栈，共 40 个函数）=====
+
+            setMethod(
+                BshMethod("getFileType", arrayOf(BString)) {
+                    audioBridge.getFileType(it[0] as String)
+                })
+            setMethod(
+                BshMethod("flacToSilk", arrayOf(BString, BString, int)) {
+                    audioBridge.flacToSilk(it[0] as String, it[1] as String, it[2] as Int)
+                })
+            setMethod(
+                BshMethod("oggToSilk", arrayOf(BString, BString, int)) {
+                    audioBridge.oggToSilk(it[0] as String, it[1] as String, it[2] as Int)
+                })
+            setMethod(
+                BshMethod("pcmToSilk", arrayOf(BString, BString, int, int, int)) {
+                    audioBridge.pcmToSilk(
+                        it[0] as String, it[1] as String,
+                        it[2] as Int, it[3] as Int, it[4] as Int
+                    )
+                })
+            setMethod(
+                BshMethod("autoToSilk", arrayOf(BString, BString, int)) {
+                    audioBridge.autoToSilk(it[0] as String, it[1] as String, it[2] as Int)
+                })
+            setMethod(
+                BshMethod("silkToMp3", arrayOf(BString, BString, int)) {
+                    audioBridge.silkToMp3(it[0] as String, it[1] as String, it[2] as Int)
+                })
+            setMethod(
+                BshMethod("silkToPcm", arrayOf(BString, BString, int)) {
+                    audioBridge.silkToPcm(it[0] as String, it[1] as String, it[2] as Int)
+                })
+            setMethod(
+                BshMethod("mp3ToPcm", arrayOf(BString, BString)) {
+                    audioBridge.mp3ToPcm(it[0] as String, it[1] as String)
+                })
+            setMethod(
+                BshMethod("wavToPcm", arrayOf(BString, BString)) {
+                    audioBridge.wavToPcm(it[0] as String, it[1] as String)
+                })
+            setMethod(
+                BshMethod("flacToPcm", arrayOf(BString, BString)) {
+                    audioBridge.flacToPcm(it[0] as String, it[1] as String)
+                })
+            setMethod(
+                BshMethod("oggToPcm", arrayOf(BString, BString)) {
+                    audioBridge.oggToPcm(it[0] as String, it[1] as String)
+                })
+            setMethod(
+                BshMethod("autoToPcm", arrayOf(BString, BString)) {
+                    audioBridge.autoToPcm(it[0] as String, it[1] as String)
+                })
+            setMethod(
+                BshMethod("getAudioInfo", arrayOf(BString)) {
+                    audioBridge.getAudioInfo(it[0] as String)
+                })
+            setMethod(
+                BshMethod("decodeAacFile", arrayOf(BString, BString)) {
+                    audioBridge.decodeAacFile(it[0] as String, it[1] as String)
+                })
+            setMethod(
+                BshMethod("encodePcmToAac", arrayOf(BString, BString, int, int)) {
+                    audioBridge.encodePcmToAac(
+                        it[0] as String, it[1] as String, it[2] as Int, it[3] as Int
+                    )
+                })
+            setMethod(
+                BshMethod("encodePcmToM4a", arrayOf(BString, BString, int, int)) {
+                    audioBridge.encodePcmToM4a(
+                        it[0] as String, it[1] as String, it[2] as Int, it[3] as Int
+                    )
+                })
+            setMethod(
+                BshMethod("mp4ToSilk", arrayOf(BString, BString, int)) {
+                    audioBridge.mp4ToSilk(it[0] as String, it[1] as String, it[2] as Int)
+                })
+            setMethod(
+                BshMethod("silkToM4a", arrayOf(BString, BString, int)) {
+                    audioBridge.silkToM4a(it[0] as String, it[1] as String, it[2] as Int)
+                })
+            setMethod(
+                BshMethod("mp4ToM4a", arrayOf(BString, BString, int)) {
+                    audioBridge.mp4ToM4a(it[0] as String, it[1] as String, it[2] as Int)
+                })
+            setMethod(
+                BshMethod("mp4ToAac", arrayOf(BString, BString, int)) {
+                    audioBridge.mp4ToAac(it[0] as String, it[1] as String, it[2] as Int)
+                })
+            setMethod(
+                BshMethod("m4aToSilk", arrayOf(BString, BString, int)) {
+                    audioBridge.m4aToSilk(it[0] as String, it[1] as String, it[2] as Int)
+                })
+            setMethod(
+                BshMethod("aacToSilk", arrayOf(BString, BString, int)) {
+                    audioBridge.aacToSilk(it[0] as String, it[1] as String, it[2] as Int)
+                })
+            setMethod(
+                BshMethod("m4aToAac", arrayOf(BString, BString, int)) {
+                    audioBridge.m4aToAac(it[0] as String, it[1] as String, it[2] as Int)
+                })
+            setMethod(
+                BshMethod("m4aToM4a", arrayOf(BString, BString, int)) {
+                    audioBridge.m4aToM4a(it[0] as String, it[1] as String, it[2] as Int)
+                })
+            setMethod(
+                BshMethod("autoToAac", arrayOf(BString, BString, int)) {
+                    audioBridge.autoToAac(it[0] as String, it[1] as String, it[2] as Int)
+                })
+            setMethod(
+                BshMethod("autoToM4a", arrayOf(BString, BString, int)) {
+                    audioBridge.autoToM4a(it[0] as String, it[1] as String, it[2] as Int)
+                })
+            setMethod(
+                BshMethod("autoAacToSilk", arrayOf(BString, BString, int)) {
+                    audioBridge.autoAacToSilk(it[0] as String, it[1] as String, it[2] as Int)
+                })
+            setMethod(
+                BshMethod("silkToAac", arrayOf(BString, BString, int)) {
+                    audioBridge.silkToAac(it[0] as String, it[1] as String, it[2] as Int)
+                })
+            setMethod(
+                BshMethod("aacToPcm", arrayOf(BString, BString)) {
+                    audioBridge.aacToPcm(it[0] as String, it[1] as String)
+                })
+            setMethod(
+                BshMethod("pcmToAac", arrayOf(BString, BString, int, int)) {
+                    audioBridge.pcmToAac(
+                        it[0] as String, it[1] as String, it[2] as Int, it[3] as Int
+                    )
+                })
+            setMethod(
+                BshMethod("pcmToM4a", arrayOf(BString, BString, int, int)) {
+                    audioBridge.pcmToM4a(
+                        it[0] as String, it[1] as String, it[2] as Int, it[3] as Int
+                    )
+                })
+            setMethod(
+                BshMethod("m4aToPcm", arrayOf(BString, BString)) {
+                    audioBridge.m4aToPcm(it[0] as String, it[1] as String)
+                })
+            setMethod(
+                BshMethod("decodeM4aFile", arrayOf(BString, BString)) {
+                    audioBridge.decodeM4aFile(it[0] as String, it[1] as String)
+                })
+            setMethod(
+                BshMethod("getDurationLimited", arrayOf(BString)) {
+                    audioBridge.getDurationLimited(it[0] as String)
+                })
+            setMethod(
+                BshMethod("getAudioError", arrayOf(int)) {
+                    audioBridge.getErrorMessage(it[0] as Int)
+                })
+            setMethod(
+                BshMethod("startTransform", arrayOf(int, BString, BString, int, Consumer::class.java)) {
+                    val cb = it[4] as Consumer<Any?>
+                    audioBridge.startTransform(
+                        it[0] as Int, it[1] as String, it[2] as String, it[3] as Int
+                    ) { event ->
+                        runCatching { cb.accept(event) }
+                    }
+                })
+
+            // ===== Conversation / Group / Message extras（对齐 Hchat 脚本 API）=====
+
+            setMethod(
+                BshMethod("getChatroomName", arrayOf(BString)) {
+                    WeDatabaseApi.getGroup(it[0] as String)?.displayName ?: ""
+                })
+            setMethod(
+                BshMethod("getGroupMemberName", arrayOf(BString, BString)) {
+                    WeDatabaseApi.getGroupMemberDisplayName(it[0] as String, it[1] as String)
+                })
+            setMethod(
+                BshMethod("getGroupNickName", arrayOf(BString, BString)) {
+                    WeDatabaseApi.getGroupMemberDisplayName(it[0] as String, it[1] as String)
+                })
+            setMethod(
+                BshMethod("getOfficialListInfo", arrayOf()) {
+                    WeDatabaseApi.getOfficialAccounts().map { a ->
+                        mapOf(
+                            "wxid" to a.wxId,
+                            "nickname" to a.nickname,
+                            "avatarUrl" to a.avatarUrl,
+                        )
+                    }
+                })
+            setMethod(
+                BshMethod("deleteConversation", arrayOf(BString)) {
+                    WeConversationApi.deleteConversation(it[0] as String)
+                })
+            setMethod(
+                BshMethod("hideConversation", arrayOf(BString)) {
+                    WeConversationApi.hideConversation(it[0] as String)
+                })
+            setMethod(
+                BshMethod("reloadConversations", arrayOf()) {
+                    WeConversationApi.reloadConversations()
+                })
+            setMethod(
+                BshMethod("clearUnread", arrayOf(BString)) {
+                    WeConversationApi.markAsRead(it[0] as String)
+                    true
+                })
+            setMethod(
+                BshMethod("clearAllUnread", arrayOf()) {
+                    WeConversationApi.markAllAsRead()
+                    true
+                })
+            setMethod(
+                BshMethod("isDnd", arrayOf(BString)) {
+                    WeConversationApi.isDnd(it[0] as String)
+                })
+            setMethod(
+                BshMethod("setDnd", arrayOf(BString, java.lang.Boolean.TYPE)) {
+                    WeConversationApi.setDnd(it[0] as String, it[1] as Boolean)
+                })
+            setMethod(
+                BshMethod("isPinned", arrayOf(BString)) {
+                    WeConversationApi.isPinned(it[0] as String)
+                })
+            setMethod(
+                BshMethod("setPinned", arrayOf(BString, java.lang.Boolean.TYPE)) {
+                    WeConversationApi.setPinned(it[0] as String, it[1] as Boolean)
+                })
+            setMethod(
+                BshMethod("revokeMsg", arrayOf(java.lang.Long.TYPE)) {
+                    WeMessageApi.revokeMsgByMsgId(it[0] as Long)
+                })
+            setMethod(
+                BshMethod("getMsgSvrIdByMsgId", arrayOf(java.lang.Long.TYPE)) {
+                    WeMessageApi.getMsgSvrIdByMsgId(it[0] as Long) ?: -1L
+                })
+            setMethod(
+                BshMethod("getTalkerByMsgSvrId", arrayOf(java.lang.Long.TYPE)) {
+                    WeMessageApi.getTalkerByMsgSvrId(it[0] as Long) ?: ""
+                })
+
+            // ===== SNS / Moments（对齐 Hchat 脚本 API，基于 WeMomentsApi）=====
+
+            setMethod(
+                BshMethod("getSnsInfo", arrayOf(java.lang.Long.TYPE)) {
+                    WeMomentsApi.getSnsInfoBySnsId(it[0] as Long)
+                })
+            setMethod(
+                BshMethod("getSnsContentText", arrayOf(java.lang.Long.TYPE)) {
+                    val info = WeMomentsApi.getSnsInfoBySnsId(it[0] as Long) ?: return@BshMethod ""
+                    WeMomentsApi.getContentText(info) ?: ""
+                })
+            setMethod(
+                BshMethod("getSnsTableId", arrayOf(java.lang.Long.TYPE)) {
+                    val info = WeMomentsApi.getSnsInfoBySnsId(it[0] as Long) ?: return@BshMethod ""
+                    WeMomentsApi.getSnsTableId(info) ?: ""
+                })
+            setMethod(
+                BshMethod("isSnsLiked", arrayOf(java.lang.Long.TYPE)) {
+                    val info = WeMomentsApi.getSnsInfoBySnsId(it[0] as Long) ?: return@BshMethod false
+                    WeMomentsApi.isLiked(info)
+                })
+            setMethod(
+                BshMethod("isSnsDeleted", arrayOf(java.lang.Long.TYPE)) {
+                    val info = WeMomentsApi.getSnsInfoBySnsId(it[0] as Long) ?: return@BshMethod false
+                    WeMomentsApi.isDeleted(info)
+                })
+            setMethod(
+                BshMethod("isSnsAd", arrayOf(java.lang.Long.TYPE)) {
+                    val info = WeMomentsApi.getSnsInfoBySnsId(it[0] as Long) ?: return@BshMethod false
+                    WeMomentsApi.isAd(info)
+                })
+            setMethod(
+                BshMethod("likeSns", arrayOf(java.lang.Long.TYPE)) {
+                    val info = WeMomentsApi.getSnsInfoBySnsId(it[0] as Long) ?: return@BshMethod false
+                    runCatching { WeMomentsApi.like(info) }.isSuccess
+                })
+            setMethod(
+                BshMethod("unlikeSns", arrayOf(java.lang.Long.TYPE)) {
+                    val info = WeMomentsApi.getSnsInfoBySnsId(it[0] as Long) ?: return@BshMethod false
+                    runCatching { WeMomentsApi.unlike(info) }.isSuccess
+                })
+            setMethod(
+                BshMethod("postSnsText", arrayOf(BString)) {
+                    WeMomentsApi.postText(it[0] as String)
+                })
+
+            // ===== Menu registration（与 Hchat 脚本 API 同名，便于脚本互通）=====
+
+            setMethod(
+                BshMethod("registerPlusMenu", arrayOf(BString, Consumer::class.java)) {
+                    val title = it[0] as String
+                    @Suppress("UNCHECKED_CAST")
+                    val cb = it[1] as Consumer<Any?>
+                    val provider = WeChatInputBarMenuApi.IActionItemsProvider {
+                        listOf(
+                            WeChatInputBarMenuApi.ActionItem(
+                                id = "script_plus_$title",
+                                icon = MaterialSymbols.Outlined.Block,
+                                label = title,
+                                onClick = { _, _ -> runCatching { cb.accept(null) } }
+                            )
+                        )
+                    }
+                    WeChatInputBarMenuApi.addProvider(provider)
+                    return@BshMethod provider
+                })
+            setMethod(
+                BshMethod("registerMessageMenu", arrayOf(BString, Consumer::class.java)) {
+                    val title = it[0] as String
+                    @Suppress("UNCHECKED_CAST")
+                    val cb = it[1] as Consumer<Any?>
+                    val provider = WeChatMessageContextMenuApi.IMenuItemsProvider {
+                        listOf(
+                            WeChatMessageContextMenuApi.MenuItem(
+                                id = title.hashCode(),
+                                text = title,
+                                drawable = HostInfo.application
+                                    .getDrawable(android.R.drawable.ic_menu_edit)
+                                    ?: android.graphics.drawable.ColorDrawable(0),
+                                imageVector = MaterialSymbols.Outlined.Block,
+                                isSupported = { true },
+                                onClick = { _, _, _ -> runCatching { cb.accept(null) } }
+                            )
+                        )
+                    }
+                    WeChatMessageContextMenuApi.addProvider(provider)
+                    return@BshMethod provider
+                })
+            setMethod(
+                BshMethod("removeMenu", arrayOf(Any::class.java)) {
+                    when (val h = it[0]) {
+                        is WeChatInputBarMenuApi.IActionItemsProvider ->
+                            WeChatInputBarMenuApi.removeProvider(h)
+                        is WeChatMessageContextMenuApi.IMenuItemsProvider ->
+                            WeChatMessageContextMenuApi.removeProvider(h)
+                    }
+                    return@BshMethod null
+                })
+
+            // ===== Module dialogs（模块弹窗，与 Hchat 脚本 API 对应）=====
+            //
+            // 统一使用 WCX 自己的 Compose 卡片弹窗（showComposeDialog + AlertDialogContent），
+            // 与模块内其它 UI 风格一致，避免系统原生 AlertDialog 的观感差异。
+
+            setMethod(
+                BshMethod("showModuleDialog", arrayOf(BString, BString)) {
+                    val title = it[0] as String
+                    val message = it[1] as String
+                    val ctx = getTopMostActivity(true) ?: HostInfo.application
+                    runOnUiThread {
+                        runCatching {
+                            showComposeDialog(ctx) {
+                                AlertDialogContent(
+                                    title = { Text(title) },
+                                    text = { Text(message) },
+                                    confirmButton = {
+                                        Button({ onDismiss() }) { Text("确定") }
+                                    }
+                                )
+                            }
+                        }.onFailure { e -> showToast("弹窗失败：${e.message}") }
+                    }
+                    return@BshMethod true
+                })
+            setMethod(
+                BshMethod("showModuleConfirmDialog", arrayOf(BString, BString, Consumer::class.java)) {
+                    val title = it[0] as String
+                    val message = it[1] as String
+                    @Suppress("UNCHECKED_CAST")
+                    val cb = it[2] as Consumer<Any?>
+                    val ctx = getTopMostActivity(true) ?: HostInfo.application
+                    runOnUiThread {
+                        runCatching {
+                            showComposeDialog(ctx) {
+                                AlertDialogContent(
+                                    title = { Text(title) },
+                                    text = { Text(message) },
+                                    dismissButton = {
+                                        TextButton({ onDismiss() }) { Text("取消") }
+                                    },
+                                    confirmButton = {
+                                        Button({
+                                            onDismiss()
+                                            runCatching { cb.accept(true) }
+                                        }) { Text("确定") }
+                                    }
+                                )
+                            }
+                        }.onFailure { e -> showToast("弹窗失败：${e.message}") }
+                    }
+                    return@BshMethod true
+                })
+            setMethod(
+                BshMethod(
+                    "showModuleInputDialog",
+                    arrayOf(BString, BString, BString, BString, Consumer::class.java)
+                ) {
+                    val title = it[0] as String
+                    val initial = it[2] as String
+                    val placeholder = it[3] as String
+                    @Suppress("UNCHECKED_CAST")
+                    val cb = it[4] as Consumer<Any?>
+                    val ctx = getTopMostActivity(true) ?: HostInfo.application
+                    runOnUiThread {
+                        runCatching {
+                            showComposeDialog(ctx) {
+                                var value by remember { mutableStateOf(initial) }
+                                AlertDialogContent(
+                                    title = { Text(title) },
+                                    text = {
+                                        DefaultColumn {
+                                            OutlinedTextField(
+                                                value = value,
+                                                onValueChange = { value = it },
+                                                placeholder = { Text(placeholder) },
+                                                singleLine = true,
+                                                modifier = Modifier.fillMaxWidth()
+                                            )
+                                        }
+                                    },
+                                    dismissButton = {
+                                        TextButton({ onDismiss() }) { Text("取消") }
+                                    },
+                                    confirmButton = {
+                                        Button({
+                                            onDismiss()
+                                            runCatching { cb.accept(value) }
+                                        }) { Text("确定") }
+                                    }
+                                )
+                            }
+                        }.onFailure { e -> showToast("弹窗失败：${e.message}") }
+                    }
+                    return@BshMethod true
+                })
+            setMethod(
+                BshMethod(
+                    "showModuleChoiceDialog",
+                    arrayOf(BString, BString, List::class.java, Consumer::class.java)
+                ) {
+                    val title = it[0] as String
+                    val choices = (it[2] as List<*>).map { c -> c?.toString() ?: "" }
+                    @Suppress("UNCHECKED_CAST")
+                    val cb = it[3] as Consumer<Any?>
+                    val ctx = getTopMostActivity(true) ?: HostInfo.application
+                    runOnUiThread {
+                        runCatching {
+                            showComposeDialog(ctx) {
+                                AlertDialogContent(
+                                    title = { Text(title) },
+                                    text = {
+                                        DefaultColumn {
+                                            choices.forEachIndexed { index, choice ->
+                                                ListItem(
+                                                    headlineContent = { Text(choice) },
+                                                    modifier = Modifier
+                                                        .fillMaxWidth()
+                                                        .clickable {
+                                                            onDismiss()
+                                                            runCatching { cb.accept(index) }
+                                                        }
+                                                )
+                                            }
+                                        }
+                                    },
+                                    dismissButton = {
+                                        TextButton({ onDismiss() }) { Text("取消") }
+                                    }
+                                )
+                            }
+                        }.onFailure { e -> showToast("弹窗失败：${e.message}") }
+                    }
+                    return@BshMethod true
+                })
+            setMethod(
+                BshMethod(
+                    "showModuleMultiChoiceDialog",
+                    arrayOf(BString, BString, List::class.java, Consumer::class.java)
+                ) {
+                    val title = it[0] as String
+                    val choices = (it[2] as List<*>).map { c -> c?.toString() ?: "" }
+                    @Suppress("UNCHECKED_CAST")
+                    val cb = it[3] as Consumer<Any?>
+                    val ctx = getTopMostActivity(true) ?: HostInfo.application
+                    runOnUiThread {
+                        runCatching {
+                            showComposeDialog(ctx) {
+                                val checked = remember { mutableStateListOf<Int>() }
+                                AlertDialogContent(
+                                    title = { Text(title) },
+                                    text = {
+                                        DefaultColumn {
+                                            choices.forEachIndexed { index, choice ->
+                                                ListItem(
+                                                    headlineContent = { Text(choice) },
+                                                    trailingContent = {
+                                                        Switch(
+                                                            checked = index in checked,
+                                                            onCheckedChange = null
+                                                        )
+                                                    },
+                                                    modifier = Modifier
+                                                        .fillMaxWidth()
+                                                        .clickable {
+                                                            if (index in checked) checked.remove(index)
+                                                            else checked.add(index)
+                                                        }
+                                                )
+                                            }
+                                        }
+                                    },
+                                    dismissButton = {
+                                        TextButton({ onDismiss() }) { Text("取消") }
+                                    },
+                                    confirmButton = {
+                                        Button({
+                                            onDismiss()
+                                            runCatching { cb.accept(checked.toList()) }
+                                        }) { Text("确定") }
+                                    }
+                                )
+                            }
+                        }.onFailure { e -> showToast("弹窗失败：${e.message}") }
+                    }
+                    return@BshMethod true
+                })
+
+            // ===== Contact label（与 Hchat 脚本 API 对应）=====
+
+            setMethod(
+                BshMethod("addContactLabel", arrayOf(BString)) {
+                    val name = it[0] as String
+                    WeContactLabelApi.createLabel(name)?.toString() ?: ""
                 })
 
             // getLong(key, default)

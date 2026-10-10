@@ -31,6 +31,7 @@ import com.Johnny.wcx.features.api.core.models.MessageType
 import com.Johnny.wcx.features.api.net.WeNetSceneApi
 import com.Johnny.wcx.features.core.ClickableFeature
 import com.Johnny.wcx.features.core.Feature
+import com.Johnny.wcx.features.items.payment.stats.RedPacketStatsManager
 import com.Johnny.wcx.preferences.WePrefs
 import com.Johnny.wcx.ui.content.AlertDialogContent
 import com.Johnny.wcx.ui.content.Button
@@ -217,9 +218,27 @@ object AutoOpenRedPackets : ClickableFeature(), WeDatabaseListenerApi.IInsertLis
 
             val displayAmount = amount / 100.0
 
+            // 抢红包金额统计：开关开启才写入（关闭时不执行任何读写）；
+            // 金额<=0/解析异常已在上方短路；任一异常仅记日志，绝不影响抢红包核心流程。
+            if (RedPacketStatsManager.isEnabled()) {
+                RedPacketStatsManager.addSuccessRecord(
+                    senderName = info.nickName,
+                    chatName = runCatching { WeDatabaseApi.getDisplayName(info.talker) }.getOrDefault(""),
+                    money = displayAmount,
+                    msgType = redPacketTypeLabel(info.msgType),
+                    timestamp = System.currentTimeMillis(),
+                )
+            }
+
             val reply = packetAutoReply
             if (reply.isNotBlank()) {
-                WeMessageApi.sendText(info.talker, reply.replace($$"$amount", "¥$displayAmount"))
+                try {
+                    WeMessageApi.sendText(info.talker, reply.replace("\$amount", "¥$displayAmount"))
+                    WeLogger.i(TAG, "sent red packet auto-reply to ${info.talker}")
+                } catch (e: Throwable) {
+                    // 自动回复失败不能中断抢红包成功处理或通知逻辑。
+                    WeLogger.e(TAG, "red packet auto-reply failed (talker=${info.talker})", e)
+                }
             }
 
             if (!packetNotif) return@hookAfter
@@ -386,6 +405,9 @@ object AutoOpenRedPackets : ClickableFeature(), WeDatabaseListenerApi.IInsertLis
                     WeLogger.i(TAG, "sent receive request (sendId=$sendId)")
                 } catch (e: Throwable) {
                     WeLogger.e(TAG, "failed to send receive request (sendId=$sendId)", e)
+                    currentRedPacketMap.remove(sendId)
+                    retryCountMap.remove(sendId)
+                    processedSendIds.remove(sendId)
                 }
             }
         } catch (e: Throwable) {
@@ -400,6 +422,17 @@ object AutoOpenRedPackets : ClickableFeature(), WeDatabaseListenerApi.IInsertLis
         val patternSimple = "<$tag>(.*?)</$tag>".toRegex()
         val matchSimple = patternSimple.find(xml)
         return matchSimple?.groupValues?.get(1) ?: ""
+    }
+
+    /**
+     * 红包类型展示文本。
+     * 【未验证】微信红包 nativeurl 的 msgtype 参数约定：1=普通红包、2=拼手气红包。
+     * 该映射基于公开惯例；若实际含义不同仅影响展示文本，不影响金额统计正确性。
+     */
+    private fun redPacketTypeLabel(msgType: Int): String = when (msgType) {
+        1 -> "普通红包"
+        2 -> "拼手气红包"
+        else -> "红包(type=$msgType)"
     }
 
     override fun onDisable() {
@@ -522,7 +555,7 @@ object AutoOpenRedPackets : ClickableFeature(), WeDatabaseListenerApi.IInsertLis
                             value = autoReplyInput,
                             onValueChange = { autoReplyInput = it.trim() },
                             label = { Text("抢到后自动回复 (留空禁用)") },
-                            supportingText = { Text($$"成功抢到红包后向来源对话发送自定义消息\n(使用占位符 $amount 表示金额)") },
+                            supportingText = { Text("成功抢到红包后向来源对话发送自定义消息\n(使用占位符 \$amount 表示金额)") },
                             singleLine = true,
                         )
                     }

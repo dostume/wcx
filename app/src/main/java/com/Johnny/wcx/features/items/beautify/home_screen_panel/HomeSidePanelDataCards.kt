@@ -3,7 +3,9 @@ package com.Johnny.wcx.features.items.beautify.home_screen_panel
 import androidx.annotation.StringRes
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -161,6 +163,7 @@ internal fun HomeSidePanelDateTimeCard(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 internal fun HomeSidePanelWeatherCard(
     card: WeatherCardConfig,
@@ -181,8 +184,13 @@ internal fun HomeSidePanelWeatherCard(
         is WeatherCardContent.Preview -> content.snapshot
     }
     val shape = RoundedCornerShape(24.dp)
+    // 点击天气卡片 = 刷新天气；长按天气卡片 = 进入该卡片设置（改位置/定位）。
+    // 未提供 onEditCard 时长按不生效，点击刷新仍保持可用。
     val clickModifier = if (interactionEnabled && !editMode && runtime != null) {
-        Modifier.clickable { onRefresh(card.id) }
+        Modifier.combinedClickable(
+            onLongClick = onEditCard?.let { edit -> { edit(card.id) } },
+            onClick = { onRefresh(card.id) },
+        )
     } else {
         Modifier
     }
@@ -231,7 +239,7 @@ internal fun HomeSidePanelWeatherCard(
                 )
                 snapshot?.let {
                     Text(
-                        "更新于 ".format(formatWeatherPublishedAt(it.publishedAt)),
+                        "更新于 %s".format(formatWeatherPublishedAt(it.publishedAt)),
                         modifier = Modifier
                             .padding(start = 10.dp)
                             .widthIn(max = 112.dp),
@@ -275,7 +283,7 @@ internal fun HomeSidePanelWeatherCard(
                                         maxLines = 1,
                                     )
                                     Text(
-                                        "体感 ".format(snapshot.feelsLike),
+                                        "体感 %s".format(snapshot.feelsLike),
                                         style = MaterialTheme.typography.bodySmall,
                                         color = contentColor.copy(alpha = 0.72f),
                                     )
@@ -481,6 +489,7 @@ internal fun HomeSidePanelWalletCard(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 internal fun HomeSidePanelHitokotoCard(
     card: HitokotoCardConfig,
@@ -505,8 +514,12 @@ internal fun HomeSidePanelHitokotoCard(
 
         is HitokotoCardContent.Preview -> content.snapshot
     }
+    // 点击一言卡片 = 刷新一言；长按一言卡片 = 进入该卡片设置。
     val clickModifier = if (interactionEnabled && !editMode && runtime != null) {
-        Modifier.clickable { onRefresh(card.id) }
+        Modifier.combinedClickable(
+            onLongClick = onEditCard?.let { edit -> { edit(card.id) } },
+            onClick = { onRefresh(card.id) },
+        )
     } else {
         Modifier
     }
@@ -550,8 +563,8 @@ internal fun HomeSidePanelHitokotoCard(
                             author != null && source != null ->
                                 "—— %1\$s「%2\$s」".format(author, source)
 
-                            author != null -> "—— ".format(author)
-                            source != null -> "——「".format(source)
+                            author != null -> "—— %s".format(author)
+                            source != null -> "——「%s」".format(source)
                             else -> null
                         }
                         attribution?.let {

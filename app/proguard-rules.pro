@@ -23,14 +23,14 @@
 -keep class kotlin.coroutines.Continuation { *; }
 -dontwarn kotlinx.coroutines.**
 
-# kotlin-reflect 经传递依赖存在于 APK：R8 不得裁剪其内建表
-# （否则 KotlinBuiltIns.getBuiltInClassByFqName 返回 null → 启用功能时 IllegalStateException）
+# kotlin-reflect 在运行时反射路径中使用；暂时保留其内建表，避免反射/脚本功能回归。
 -keep class kotlin.reflect.** { *; }
 -dontwarn kotlin.reflect.**
 
 # ─── Serialization ──────────────────────────────────────────────────
 -keepattributes *Annotation*, InnerClasses
--keep class kotlinx.serialization.** { *; }
+# 不再全量 keep kotlinx.serialization 运行库。运行时入口由普通可达性分析保留，
+# 应用内生成的 serializer 仍由下方规则保留，允许 R8 移除未使用的格式/实现代码。
 -dontnote kotlinx.serialization.AnnotationsKt
 -keepclassmembers class kotlinx.serialization.json.** {
     *** Companion;
@@ -76,7 +76,7 @@
 -dontwarn java.lang.invoke.**
 
 # ─── WeChat Stubs ───────────────────────────────────────────────────
--keep class com.tencent.mm.** { *; }
+# 微信 API stub 为 compileOnly；不应打入模块 APK，也无需对其设置 keep 规则。
 
 # ─── Obfuscation Enhancements ───────────────────────────────────────
 -repackageclasses
