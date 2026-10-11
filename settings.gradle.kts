@@ -17,8 +17,8 @@ dependencyResolutionManagement {
         // 命中模块描述符就不会再尝试其他仓库, 导致 CI 端解析失败
         maven("https://jitpack.io") {
             content {
+                includeGroup("com.github.REAndroid")
                 includeGroup("com.github.Ujhhgtg")
-                includeGroup("com.github.Ujhhgtg.rhino")
                 includeGroup("com.github.topjohnwu.libsu")
             }
         }
