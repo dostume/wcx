@@ -3,6 +3,7 @@ package com.Johnny.wcx.ui.utils
 import android.app.Dialog
 import android.content.Context
 import android.graphics.Color
+import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.view.Window
@@ -34,10 +35,18 @@ fun showComposeDialog(
 ) {
     val context = CommonContextWrapper(context)
 
-    val dialog = Dialog(
-        context,
+    // 全屏时必须换成「非浮动」主题。
+    // Theme_DeviceDefault_Light_Dialog_NoActionBar_MinWidth 是浮动窗口主题
+    // (windowIsFloating=true), 它给窗口自带最小宽度 65% / 尺寸约束与内外边距,
+    // 单靠 setLayout(MATCH_PARENT, MATCH_PARENT) 是压不住主题约束的 ——
+    // 表现就是"对话框只铺满中间一块, 左右留边、上下不贴边"。
+    val dialogTheme = if (fullScreen) {
+        android.R.style.Theme_DeviceDefault_Light_NoActionBar
+    } else {
         android.R.style.Theme_DeviceDefault_Light_Dialog_NoActionBar_MinWidth
-    )
+    }
+
+    val dialog = Dialog(context, dialogTheme)
     val lifecycleOwner = XposedLifecycleOwner.create()
 
     dialog.apply {
@@ -45,11 +54,14 @@ fun showComposeDialog(
             setBackgroundDrawableResource(android.R.color.transparent)
             requestFeature(Window.FEATURE_NO_TITLE)
             if (fullScreen) {
-                // 铺满全屏: 窗口尺寸匹配父容器, 解除平台 Dialog 的默认尺寸约束
+                // 铺满全屏: 窗口尺寸匹配父容器 + FILL 重力, 解除平台 Dialog 的默认尺寸约束
                 setLayout(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.MATCH_PARENT
                 )
+                setGravity(Gravity.FILL)
+                // 全屏内容自身不透明, 不需要背景压暗; 压暗反而会在状态栏/导航栏露出暗边
+                setDimAmount(0f)
             }
         }
 
@@ -90,6 +102,16 @@ fun showComposeDialog(
         window!!.setBackgroundDrawable(Color.TRANSPARENT.toDrawable())
         setOnDismissListener { lifecycleOwner.onDestroy() }
         show()
+
+        if (fullScreen) {
+            // show() 之后 WindowManager 会用窗口属性重新计算一次布局,
+            // 主题里的尺寸约束可能在这里又把窗口收回去, 所以 show 完再钉一次。
+            window!!.setLayout(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
+            window!!.setGravity(Gravity.FILL)
+        }
     }
 }
 

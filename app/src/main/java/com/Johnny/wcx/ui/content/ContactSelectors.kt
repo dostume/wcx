@@ -151,6 +151,29 @@ enum class SortMode(val icon: ImageVector) {
     }
 }
 
+// 选择操作 (全选/全不选/反选) 的紧凑按钮: 与筛选 chip 同一套视觉, 但放在不滚动的一行里,
+// 保证窄屏上也不会被挤出可视区域。
+@Composable
+private fun SelectionActionChip(
+    label: String,
+    icon: ImageVector,
+    onClick: () -> Unit
+) {
+    FilterChip(
+        selected = false,
+        onClick = onClick,
+        label = { Text(label, style = MaterialTheme.typography.labelSmall) },
+        leadingIcon = {
+            Icon(
+                imageVector = icon,
+                contentDescription = label,
+                modifier = Modifier.size(14.dp)
+            )
+        },
+        modifier = Modifier.height(28.dp)
+    )
+}
+
 @Composable
 fun BaseContactSelector(
     title: String,
@@ -183,6 +206,10 @@ fun BaseContactSelector(
     val listState = rememberLazyListState()
     val coroutineScope = rememberCoroutineScope()
     val alphabet = remember { listOf(SELECTED_SECTION_KEY) + ('A'..'Z').map { it.toString() } + "#" }
+
+    // 已选数量用于「已选 N」提示。isSelected 会遍历全部联系人, 用 selectionKey
+    // (选中集合本身) 做记忆键, 只在选择真正变化时重算, 避免每次重组都全表扫一遍。
+    val selectedCount = remember(allContacts, selectionKey) { allContacts.count { isSelected(it) } }
 
     val transliterator = remember { createTransliterator() }
 
@@ -775,63 +802,47 @@ fun BaseContactSelector(
                                         )
                                     }
                                 }
-                                if (onSelectAll != null) {
-                                    item {
-                                        FilterChip(
-                                            selected = false,
-                                            onClick = { onSelectAll(displayedContacts) },
-                                            label = { Text("全选", style = MaterialTheme.typography.labelSmall) },
-                                            leadingIcon = {
-                                                Icon(
-                                                    imageVector = MaterialSymbols.Outlined.Select_all,
-                                                    contentDescription = "全选",
-                                                    modifier = Modifier.size(14.dp)
-                                                )
-                                            },
-                                            modifier = Modifier.height(28.dp)
-                                        )
-                                    }
-                                }
-                                if (onDeselectAll != null) {
-                                    item {
-                                        FilterChip(
-                                            selected = false,
-                                            onClick = { onDeselectAll(displayedContacts) },
-                                            label = { Text("全不选", style = MaterialTheme.typography.labelSmall) },
-                                            leadingIcon = {
-                                                Icon(
-                                                    imageVector = MaterialSymbols.Outlined.Deselect,
-                                                    contentDescription = "全不选",
-                                                    modifier = Modifier.size(14.dp)
-                                                )
-                                            },
-                                            modifier = Modifier.height(28.dp)
-                                        )
-                                    }
-                                }
-                                if (onInvertSelection != null) {
-                                    item {
-                                        FilterChip(
-                                            selected = false,
-                                            onClick = { onInvertSelection(displayedContacts) },
-                                            label = { Text("反选", style = MaterialTheme.typography.labelSmall) },
-                                            leadingIcon = {
-                                                Icon(
-                                                    imageVector = MaterialSymbols.Outlined.Compare_arrows,
-                                                    contentDescription = "反选",
-                                                    modifier = Modifier.size(14.dp)
-                                                )
-                                            },
-                                            modifier = Modifier.height(28.dp)
-                                        )
-                                    }
-                                }
                             }
                         }
                     }
                 }
 
                 HorizontalDivider(modifier = Modifier.padding(vertical = 2.dp))
+
+                // 全选 / 全不选 / 反选常驻单独一行。
+                // 原先它们和排序 chip 挤在同一个横向滚动条里, 窄屏上会被排序项挤出屏幕,
+                // 「反选」根本点不到; 单独成行且不滚动, 任何时候都能点到。
+                if (onSelectAll != null || onDeselectAll != null || onInvertSelection != null) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 8.dp, vertical = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.End)
+                    ) {
+                        Text(
+                            text = "已选 $selectedCount",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.weight(1f)
+                        )
+                        if (onSelectAll != null) {
+                            SelectionActionChip("全选", MaterialSymbols.Outlined.Select_all) {
+                                onSelectAll(displayedContacts)
+                            }
+                        }
+                        if (onDeselectAll != null) {
+                            SelectionActionChip("全不选", MaterialSymbols.Outlined.Deselect) {
+                                onDeselectAll(displayedContacts)
+                            }
+                        }
+                        if (onInvertSelection != null) {
+                            SelectionActionChip("反选", MaterialSymbols.Outlined.Compare_arrows) {
+                                onInvertSelection(displayedContacts)
+                            }
+                        }
+                    }
+                }
 
                 if (displayedContacts.isEmpty()) {
                     Box(
@@ -1097,7 +1108,9 @@ fun ContactsSelector(
         onSearchQueryChange = { searchQuery = it },
         filteredContacts = filteredContacts,
         allContacts = contacts,
-        confirmButtonText = "确定 (".format(selectedWxIds.size),
+        // 原来写成 "确定 (".format(size): 格式串里没有占位符, 选中数量被静默丢掉,
+        // 按钮永远只显示「确定 (」。
+        confirmButtonText = "确定 (%d)".format(selectedWxIds.size),
         confirmButtonEnabled = true,
         onDismiss = onDismiss,
         onConfirm = { onConfirm(selectedWxIds) },
