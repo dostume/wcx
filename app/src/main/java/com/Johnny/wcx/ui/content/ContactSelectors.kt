@@ -1108,9 +1108,9 @@ fun ContactsSelector(
         onSearchQueryChange = { searchQuery = it },
         filteredContacts = filteredContacts,
         allContacts = contacts,
-        // 原来写成 "确定 (".format(size): 格式串里没有占位符, 选中数量被静默丢掉,
-        // 按钮永远只显示「确定 (」。
-        confirmButtonText = "确定 (%d)".format(selectedWxIds.size),
+        // 按钮文案只留「确定」: 原先括号里放已选数量, 但格式串漏了占位符 (只剩一个孤零零的「(」),
+        // 而且已选数量在上方常驻行的「已选 N」里已经有一份, 没必要重复。
+        confirmButtonText = "确定",
         confirmButtonEnabled = true,
         onDismiss = onDismiss,
         onConfirm = { onConfirm(selectedWxIds) },
