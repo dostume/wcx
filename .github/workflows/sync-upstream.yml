@@ -96,11 +96,18 @@ jobs:
         if: env.WEKIT_KEYSTORE_BASE64 != '' && (steps.merge.outputs.changed == 'true' || github.event_name != 'schedule' || inputs.force_release == true)
         run: echo "$WEKIT_KEYSTORE_BASE64" | base64 -d > "$HOME/wcx-keystore.jks"
 
+      - name: Grant execute permission for gradlew
+        # 仓库里的 gradlew 是 100644 (上游从 zip 重置源码时丢了执行位),
+        # 不加 chmod 会直接 "./gradlew: Permission denied" (exit 126)。
+        # ci.yml 里一直有这一步, 本工作流此前漏了, 导致 Release 构建失败。
+        if: steps.merge.outputs.changed == 'true' || github.event_name != 'schedule' || inputs.force_release == true
+        run: chmod +x gradlew
+
       - name: Build release APKs
         if: steps.merge.outputs.changed == 'true' || github.event_name != 'schedule' || inputs.force_release == true
         env:
           # 与下方 Publish 步骤的 tag 同源, 写入 APK 的 BuildConfig.RELEASE_TAG
-          WCX_RELEASE_TAG: v273
+          WCX_RELEASE_TAG: v274
         run: |
           ./gradlew --no-daemon assembleRelease
 
@@ -113,23 +120,24 @@ jobs:
           if-no-files-found: error
 
       - name: Publish APKs to Release
-        # 上游有更新 (或手动强制) 时发布 Release, tag 固定 v273 (应用 versionCode),
+        # 上游有更新 (或手动强制) 时发布 Release, tag 固定 v274 (应用 versionCode),
         # 重复发布会更新既有 Release, 不会堆积重复项
         if: steps.merge.outputs.changed == 'true' || inputs.force_release == true
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v273
-          name: v273
+          tag_name: v274
+          name: v274
           body: |
             自动同步上游 Johnny520/wcx 后构建。
 
-            本次重点 (定时发送可靠性):
-            - 漏发补发窗口 15 分钟 -> 12 小时, 并用"当天是否已发"判重,
-              进程被杀/闹钟被吞后重新打开微信仍会补发当天漏掉的任务
-            - 闹钟 requestCode 不再用 id.hashCode(), 杜绝哈希相撞导致任务静默失效
-            - 定时任务存储读写加锁, 避免并发触发时整表覆盖造成状态回退
-            - 多段消息逐段独立发送 + 失败重试, 第一段失败不再连累后面的文本段
-            - 新增 30 秒守护轮询, 兜底进程内定时器丢失 / 深度休眠错过的到点任务
+            本次重点 (联系人选择器):
+            - 「标签 / 归拢 / 分组」筛选里的「全部」改名为「不限」, 不再和类型筛选的
+              「全部 (数量)」重名
+            - 单模式 (通常只有标签) 下不再显示筛选方式切换 chip, 「标签」二字不会
+              再被误认成列表里的第一个标签项; 该分组没有可选项时整组隐藏
+            - 联系人选择器以备注为准, 支持备注 / 拼音全拼 / 拼音首字母搜索,
+              全屏显示, 常驻全选 / 全不选 / 反选, 修复微信标签筛选点不动的问题
+            - 同步上游 v274 (Hchat 脚本页迁移、深色模式适配、rhino 依赖内置等)
 
             包含本仓库全部改动 (定时发送 777026 / 取消定时发送 777027 / 自定义通知铃声 等)。
 
