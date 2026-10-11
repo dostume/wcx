@@ -331,6 +331,9 @@ val CONTENT_BOTTOM_INSET = 88.dp
 fun MiuixListScaffold(
     title: String,
     navigationIcon: @Composable (() -> Unit)? = null,
+    // 关闭后顶栏使用不透明底色、列表不再注册为模糊源，用于规避特定页面（内容为单个超高 item）
+    // 在滚动时 backdrop 采样越界导致的顶部灰块。
+    blurTopBar: Boolean = true,
     content: LazyListScope.() -> Unit,
 ) {
     val scrollBehavior = MiuixScrollBehavior()
@@ -342,17 +345,21 @@ fun MiuixListScaffold(
     Scaffold(
         topBar = {
             TopAppBar(
-                modifier = Modifier.drawBackdrop(
-                    backdrop = barBackdrop,
-                    shape = { RectangleShape },
-                    effects = {
-                        vibrancy()
-                        blur(24.dp.toPx(), 24.dp.toPx())
-                    },
-                    onDrawSurface = { drawRect(barTint) },
-                ),
+                modifier = if (blurTopBar) {
+                    Modifier.drawBackdrop(
+                        backdrop = barBackdrop,
+                        shape = { RectangleShape },
+                        effects = {
+                            vibrancy()
+                            blur(24.dp.toPx(), 24.dp.toPx())
+                        },
+                        onDrawSurface = { drawRect(barTint) },
+                    )
+                } else {
+                    Modifier
+                },
                 // Transparent so the miuix bar's own opaque surface doesn't hide the blur.
-                color = Color.Transparent,
+                color = if (blurTopBar) Color.Transparent else MiuixTheme.colorScheme.surface,
                 title = title,
                 scrollBehavior = scrollBehavior,
                 navigationIcon = { navigationIcon?.invoke() },
@@ -364,8 +371,7 @@ fun MiuixListScaffold(
             modifier = Modifier
                 .fillMaxHeight()
                 // 修复「列表页顶部出现异常灰块」：内容超出/回弹时 backdrop 采样会越界绘制。
-                .clipToBounds()
-                .layerBackdrop(barBackdrop)
+                .then(if (blurTopBar) Modifier.clipToBounds().layerBackdrop(barBackdrop) else Modifier)
                 .scrollEndHaptic()
                 .overScrollVertical()
                 .nestedScroll(scrollBehavior.nestedScrollConnection)
