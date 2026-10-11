@@ -477,6 +477,18 @@ fun BaseContactSelector(
     }
     val showFilterModeRow = availableFilterModes.isNotEmpty()
 
+    // 当前筛选方式下是否真的有可选项 (标签 / 归拢 / 分组 各一组)。
+    // 没有可选项时连「不限」一起隐藏 —— 孤零零一个按钮反而让人猜它在筛什么。
+    val hasFilterModeOptions = when (filterMode) {
+        ContactFilterMode.LABELS -> availableLabels.isNotEmpty()
+        ContactFilterMode.AGGREGATION -> availableAggregationOptions.isNotEmpty()
+        ContactFilterMode.GROUPING -> availableGroupingOptions.isNotEmpty()
+    }
+    // 类型筛选 chip 与后面的筛选条件 chip 之间画一条竖线做区隔,
+    // 否则「不限」紧跟在「群聊 (55)」后面, 看着像同一组里的第四个分类。
+    val showFilterDivider = showTypeFilterRow && showFilterModeRow &&
+            (availableFilterModes.size > 1 || hasFilterModeOptions)
+
     val displayedContacts = remember(filteredContacts, selectedType, filterMode, selectedLabelName, selectedAggregationId, selectedGroupingId, friendWxIds, groupWxIds, officialAccountWxIds, labelContactsMap, aggregationOptions, groupingOptions) {
         filteredContacts.filter { contact ->
             val isGroup = contact is WeGroup || contact.wxId.endsWith("@chatroom") || contact.wxId in groupWxIds
@@ -651,56 +663,67 @@ fun BaseContactSelector(
                                         )
                                     }
                                 }
-                                if (showFilterModeRow) {
+                                if (showFilterDivider) {
                                     item {
-                                        val modeIndex = availableFilterModes.indexOf(filterMode).coerceAtLeast(0)
-                                        val hasMoreModes = availableFilterModes.size > 1
-                                        FilterChip(
-                                            selected = true,
-                                            onClick = {
-                                                if (!hasMoreModes) {
-                                                    showToast(
-                                                        context,
-                                                        "可启用「对话归拢」或「对话分组」以使用更多筛选方式",
-                                                    )
-                                                } else {
+                                        Box(
+                                            modifier = Modifier
+                                                .width(1.dp)
+                                                .height(16.dp)
+                                                .background(MaterialTheme.colorScheme.outlineVariant)
+                                        )
+                                    }
+                                }
+                                if (showFilterModeRow) {
+                                    // 筛选方式切换 chip (标签 / 归拢 / 分组) 只在真的存在多种方式时才有意义。
+                                    // 单模式下它点不动, 而且「标签」两个字紧贴在标签列表前面, 会被当成
+                                    // 列表里的第一个标签项 —— 索性不显示。
+                                    if (availableFilterModes.size > 1) {
+                                        item {
+                                            val modeIndex = availableFilterModes.indexOf(filterMode).coerceAtLeast(0)
+                                            FilterChip(
+                                                selected = true,
+                                                onClick = {
                                                     filterMode = availableFilterModes[(modeIndex + 1) % availableFilterModes.size]
                                                     persistedContactFilterMode = filterMode.name
                                                     selectedLabelName = null
                                                     selectedAggregationId = null
                                                     selectedGroupingId = null
-                                                }
-                                            },
-                                            label = { Text(filterMode.nameRes, style = MaterialTheme.typography.labelSmall) },
-                                            leadingIcon = {
-                                                Icon(
-                                                    imageVector = filterMode.icon,
-                                                    contentDescription = filterMode.nameRes,
-                                                    modifier = Modifier.size(14.dp),
-                                                )
-                                            },
-                                            modifier = Modifier.height(28.dp)
-                                        )
-                                    }
-                                    if (filterMode == ContactFilterMode.LABELS) {
-                                        item {
-                                            val isSelected = selectedLabelName == null
-                                            FilterChip(
-                                                selected = isSelected,
-                                                onClick = { selectedLabelName = null },
-                                                label = { Text("全部", style = MaterialTheme.typography.labelSmall) },
+                                                },
+                                                label = { Text(filterMode.nameRes, style = MaterialTheme.typography.labelSmall) },
+                                                leadingIcon = {
+                                                    Icon(
+                                                        imageVector = filterMode.icon,
+                                                        contentDescription = filterMode.nameRes,
+                                                        modifier = Modifier.size(14.dp),
+                                                    )
+                                                },
                                                 modifier = Modifier.height(28.dp)
                                             )
                                         }
-                                        items(availableLabels) { label ->
-                                            val isSelected = selectedLabelName == label.labelName
-                                            val labelCount = labelCounts[label.labelName] ?: 0
-                                            FilterChip(
-                                                selected = isSelected,
-                                                onClick = { selectedLabelName = if (isSelected) null else label.labelName },
-                                                label = { Text(label.labelName, style = MaterialTheme.typography.labelSmall) },
-                                                modifier = Modifier.height(28.dp)
-                                            )
+                                    }
+                                    if (filterMode == ContactFilterMode.LABELS) {
+                                        if (hasFilterModeOptions) {
+                                            // 「不限」= 不按标签过滤。原先叫「全部」, 和左侧类型筛选的
+                                            // 「全部 (数量)」撞名, 会被当成同一个东西。
+                                            item {
+                                                val isSelected = selectedLabelName == null
+                                                FilterChip(
+                                                    selected = isSelected,
+                                                    onClick = { selectedLabelName = null },
+                                                    label = { Text("不限", style = MaterialTheme.typography.labelSmall) },
+                                                    modifier = Modifier.height(28.dp)
+                                                )
+                                            }
+                                            items(availableLabels) { label ->
+                                                val isSelected = selectedLabelName == label.labelName
+                                                val labelCount = labelCounts[label.labelName] ?: 0
+                                                FilterChip(
+                                                    selected = isSelected,
+                                                    onClick = { selectedLabelName = if (isSelected) null else label.labelName },
+                                                    label = { Text(label.labelName, style = MaterialTheme.typography.labelSmall) },
+                                                    modifier = Modifier.height(28.dp)
+                                                )
+                                            }
                                         }
                                     } else {
                                         val options = if (filterMode == ContactFilterMode.AGGREGATION) {
@@ -708,41 +731,44 @@ fun BaseContactSelector(
                                         } else {
                                             availableGroupingOptions
                                         }
-                                        item {
-                                            val isSelected = if (filterMode == ContactFilterMode.AGGREGATION) {
-                                                selectedAggregationId == null
-                                            } else {
-                                                selectedGroupingId == null
+                                        // 与标签分组同理: 没有可选项时连「不限」一起隐藏。
+                                        if (hasFilterModeOptions) {
+                                            item {
+                                                val isSelected = if (filterMode == ContactFilterMode.AGGREGATION) {
+                                                    selectedAggregationId == null
+                                                } else {
+                                                    selectedGroupingId == null
+                                                }
+                                                FilterChip(
+                                                    selected = isSelected,
+                                                    onClick = {
+                                                        if (filterMode == ContactFilterMode.AGGREGATION) {
+                                                            selectedAggregationId = null
+                                                        } else {
+                                                            selectedGroupingId = null
+                                                        }
+                                                    },
+                                                    label = { Text("不限", style = MaterialTheme.typography.labelSmall) },
+                                                    modifier = Modifier.height(28.dp)
+                                                )
                                             }
-                                            FilterChip(
-                                                selected = isSelected,
-                                                onClick = {
-                                                    if (filterMode == ContactFilterMode.AGGREGATION) {
-                                                        selectedAggregationId = null
-                                                    } else {
-                                                        selectedGroupingId = null
-                                                    }
-                                                },
-                                                label = { Text("全部", style = MaterialTheme.typography.labelSmall) },
-                                                modifier = Modifier.height(28.dp)
-                                            )
-                                        }
-                                        items(options, key = { it.id }) { option ->
-                                            val selectedId = if (filterMode == ContactFilterMode.AGGREGATION) selectedAggregationId else selectedGroupingId
-                                            val isSelected = selectedId == option.id
-                                            val count = filteredContacts.count { it.wxId in option.wxIds }
-                                            FilterChip(
-                                                selected = isSelected,
-                                                onClick = {
-                                                    if (filterMode == ContactFilterMode.AGGREGATION) {
-                                                        selectedAggregationId = if (isSelected) null else option.id
-                                                    } else {
-                                                        selectedGroupingId = if (isSelected) null else option.id
-                                                    }
-                                                },
-                                                label = { Text(option.name, style = MaterialTheme.typography.labelSmall) },
-                                                modifier = Modifier.height(28.dp)
-                                            )
+                                            items(options, key = { it.id }) { option ->
+                                                val selectedId = if (filterMode == ContactFilterMode.AGGREGATION) selectedAggregationId else selectedGroupingId
+                                                val isSelected = selectedId == option.id
+                                                val count = filteredContacts.count { it.wxId in option.wxIds }
+                                                FilterChip(
+                                                    selected = isSelected,
+                                                    onClick = {
+                                                        if (filterMode == ContactFilterMode.AGGREGATION) {
+                                                            selectedAggregationId = if (isSelected) null else option.id
+                                                        } else {
+                                                            selectedGroupingId = if (isSelected) null else option.id
+                                                        }
+                                                    },
+                                                    label = { Text(option.name, style = MaterialTheme.typography.labelSmall) },
+                                                    modifier = Modifier.height(28.dp)
+                                                )
+                                            }
                                         }
                                     }
                                 }
