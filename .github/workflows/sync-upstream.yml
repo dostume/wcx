@@ -101,6 +101,16 @@ jobs:
         if: env.WEKIT_KEYSTORE_BASE64 != ''
         run: echo "$WEKIT_KEYSTORE_BASE64" | base64 -d > "$HOME/wcx-keystore.jks"
 
+      - name: Read version from build.gradle.kts
+        id: version
+        # 版本号单一数据源, 与 ci.yml 完全一致 —— 两个工作流必须发布同一个 tag,
+        # 否则会出现「应用内显示 v276 / Releases 页面却是别的版本」的不一致。
+        run: |
+          VERSION_CODE=$(grep -oE 'versionCode[[:space:]]*=[[:space:]]*[0-9]+' app/build.gradle.kts | grep -oE '[0-9]+$')
+          echo "tag=v${VERSION_CODE}" >> "$GITHUB_OUTPUT"
+          echo "code=${VERSION_CODE}" >> "$GITHUB_OUTPUT"
+          echo "本次发布 tag: v${VERSION_CODE}"
+
       - name: Grant execute permission for gradlew
         # 仓库里的 gradlew 是 100644 (上游从 zip 重置源码时丢了执行位),
         # 不加 chmod 会直接 "./gradlew: Permission denied" (exit 126)。
@@ -110,7 +120,7 @@ jobs:
       - name: Build release APKs
         env:
           # 与下方 Publish 步骤的 tag 同源, 写入 APK 的 BuildConfig.RELEASE_TAG
-          WCX_RELEASE_TAG: v274
+          WCX_RELEASE_TAG: ${{ steps.version.outputs.tag }}
         run: |
           ./gradlew --no-daemon assembleRelease
 
@@ -122,23 +132,17 @@ jobs:
           if-no-files-found: error
 
       - name: Publish APKs to Release
-        # 上游有更新 (或手动强制) 时发布 Release, tag 固定 v274 (应用 versionCode),
-        # 重复发布会更新既有 Release, 不会堆积重复项
+        # 上游有更新 (或手动强制) 时发布 Release; tag 取 build.gradle.kts 的 versionCode,
+        # 与 ci.yml 写同一个 Release, 重复发布只会更新它, 不会堆积
         if: steps.merge.outputs.changed == 'true' || inputs.force_release == true
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v274
-          name: v274
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: ${{ steps.version.outputs.tag }}
           body: |
-            本次重点 (联系人选择器):
-            - 「标签 / 归拢 / 分组」筛选里的「全部」改名为「不限」, 不再和类型筛选的
-              「全部 (数量)」重名
-            - 单模式 (通常只有标签) 下不再显示筛选方式切换 chip, 「标签」二字不会
-              再被误认成列表里的第一个标签项; 该分组没有可选项时整组隐藏
-            - 联系人选择器以备注为准, 支持备注 / 拼音全拼 / 拼音首字母搜索,
-              全屏显示, 常驻全选 / 全不选 / 反选, 修复微信标签筛选点不动的问题
+            ## WCX ${{ steps.version.outputs.tag }}
 
-            包含本仓库全部改动 (定时发送 777026 / 取消定时发送 777027 / 自定义通知铃声 等)。
+            正式发行版本。
 
             附件 4 个 APK: standard/legacy × arm64-v8a/armeabi-v7a,
             正式签名, 可直接覆盖安装。推荐 app-standard-arm64-v8a-release.apk。
