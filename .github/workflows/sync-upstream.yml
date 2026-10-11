@@ -135,7 +135,7 @@ jobs:
         # 上游有更新 (或手动强制) 时发布 Release; tag 取 build.gradle.kts 的 versionCode,
         # 与 ci.yml 写同一个 Release, 重复发布只会更新它, 不会堆积
         if: steps.merge.outputs.changed == 'true' || inputs.force_release == true
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ steps.version.outputs.tag }}
           name: WCX ${{ steps.version.outputs.tag }}
