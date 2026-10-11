@@ -2,7 +2,7 @@
 
 **仓库主页：https://github.com/dostume/wcx** · 下载：[Releases](https://github.com/dostume/wcx/releases)
 
-> 基于上游 WeKit 的增强分支，保留上游全部 270+ 功能，另新增**消息定时发送**、**自定义通知铃声**、**一键关闭所有日志**、**联系人选择全屏化**等能力。本仓库通过 GitHub Actions 自动同步上游更新并云端构建正式签名 APK（详见下方[自动化构建](#-本仓库自动化构建无需本地环境)）。
+> 基于上游 WeKit 的增强分支，保留上游全部 270+ 功能，另新增**消息定时发送**、**自定义通知铃声**、**一键关闭所有日志**、**联系人选择全屏化**等能力。本仓库通过 GitHub Actions 云端构建正式签名 APK（详见下方[自动化构建](#-本仓库自动化构建无需本地环境)）。
 
 ---
 
@@ -24,7 +24,7 @@
 
 以下功能为本仓库独有，上游 [Johnny520/wcx](https://github.com/Johnny520/wcx) 暂未包含：
 
-> **一句话总结**：在上游基础上新增定时发送消息、自定义通知铃声、一键关闭所有日志、联系人选择全屏化，并维护每日自动同步上游的云端构建。
+> **一句话总结**：在上游基础上新增定时发送消息、自定义通知铃声、一键关闭所有日志、联系人选择全屏化，并维护云端自动构建。
 
 ### 新功能
 
@@ -42,22 +42,22 @@
 
 ### 维护与优化
 
-- 程序内链接与更新源全部指向本仓库，GitHub Actions 云端自动构建，每日自动同步上游并发布新版
+- 程序内链接与更新源全部指向本仓库，GitHub Actions 云端自动构建并发布新版
 - ProGuard 深度瘦身，安装包体积明显缩小
 - 定时发送多选/媒体链路、DEX 缓存、root 检测等多项稳定性加固
 
 ## 🤖 本仓库自动化构建（无需本地环境）
 
-本仓库配置了全自动流水线 `Sync Upstream & Build APK`：
+本仓库配置了云端构建流水线 `Sync Upstream & Build APK`，**默认不自动跟随上游更新**，按需手动触发：
 
 | 机制 | 说明 |
 |---|---|
-| **每日自动检查** | 每天北京时间 09:00 检查上游 [Johnny520/wcx](https://github.com/Johnny520/wcx) 是否更新 |
-| **自动同步出包** | 上游有更新 → 自动合并本仓库改动 → 云端构建 4 个 APK → 自动发布到 Releases（标签 `auto-<上游提交号>`） |
-| **无更新省配额** | 上游无更新时跳过构建，不消耗 Actions 时长 |
-| **手动出包** | Actions 页 → 选工作流 → Run workflow；勾选 `force_release` 可强制发布 Release |
+| **手动出包** | Actions 页 → 选工作流 → Run workflow，默认只构建当前 master |
+| **发布 Release** | 同一次触发勾选 `force_release`，构建完成后发布（刷新）到 Releases，标签为 `v<versionCode>` |
+| **按需同步上游** | 需要合并上游 [Johnny520/wcx](https://github.com/Johnny520/wcx) 时另勾选 `sync_upstream`，会先合并再构建 |
+| **产物** | 每次构建都上传 4 个 APK 到该次运行的 Artifacts |
 
-**日常使用只需记住**：有新版本时到 [Releases](https://github.com/dostume/wcx/releases) 下载最新的版本即可，全程零操作。
+**日常使用只需记住**：有新版本时到 [Releases](https://github.com/dostume/wcx/releases) 下载最新的版本即可。
 
 ---
 
