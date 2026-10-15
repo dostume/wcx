@@ -2256,6 +2256,30 @@ object WeMessageApi : ApiFeature(), IResolveDex {
             WeLogger.i(TAG, "探针[图片XML] svrId=$msgSvrId 属性(${attrs.size}) 下半: ${attrs.drop(20).joinToString(" ")}")
             val cdn = attrs.filter { it.startsWith("cdn") || it.contains("aeskey") || it.endsWith("length") }
             WeLogger.i(TAG, "探针[图片XML] svrId=$msgSvrId CDN/长度字段: ${cdn.joinToString(" ")}")
+
+            // v298: 直接回答「微信到底给了我哪一档画质」—— 不用人肉比对数字。
+            val hevcMid = attrs.firstOrNull { it.startsWith("hevc_mid_size=") }?.substringAfter("=")?.toLongOrNull() ?: -1
+            val bigLen = attrs.firstOrNull { it.startsWith("length=") }?.substringAfter("=")?.toLongOrNull() ?: -1
+            val hdLen = attrs.firstOrNull { it.startsWith("hdlength=") }?.substringAfter("=")?.toLongOrNull() ?: -1
+            val sameUrl = runCatching {
+                val u = { k: String -> attrs.firstOrNull { it.startsWith(k) }?.substringAfter("=") }
+                u("cdnbigimgurl") == u("cdnmidimgurl") && u("cdnbigimgurl") == u("cdnthumburl")
+            }.getOrDefault(false)
+            val path = resolveImageFile(row.bigImgPath)
+            val onDisk = path?.takeIf { it.isRegularFile() }?.let { runCatching { Files.size(it) }.getOrDefault(-1L) } ?: -1L
+            val tier = when {
+                onDisk <= 0L -> "未落盘"
+                hdLen > 0 && onDisk >= hdLen -> "已达原图(hdlength)"
+                bigLen > 0 && onDisk >= bigLen -> "已达大图(length)"
+                hevcMid > 0 && onDisk >= hevcMid -> "仅 HEVC 中间件 ← 未达大图"
+                else -> "低于所有已知档位"
+            }
+            WeLogger.i(
+                TAG,
+                "探针[画质档位] svrId=$msgSvrId 磁盘=${onDisk}B " +
+                        "hevc_mid=${hevcMid}B 大图length=${bigLen}B 原图hdlength=${hdLen}B " +
+                        "三档同CDN=$sameUrl → $tier"
+            )
         }
 
         // ImgInfo2 整行所有列 —— 看是否还有我们没读的字段指向原图
@@ -2313,7 +2337,45 @@ object WeMessageApi : ApiFeature(), IResolveDex {
         }
     }
 
+    /**
+     * v298 探针: 摸清 `DownloadImgService` 上到底有哪些重载 / 参数能指定"画质"。
+     *
+     * v297 探针已经把链路问清楚了: `<img>` 只有 18 个属性, `cdnthumburl` / `cdnmidimgurl` /
+     * `cdnbigimgurl` **是同一个 CDN 地址**, `cdnhdheight`/`cdnhdwidth` 都是 0 —— **没有
+     * `cdnrawimgurl` 那样的独立 HD 字段**(视频侧是有的, 见 `cdnrawvideourl`)。
+     * 所以"要哪个画质"只能靠**调用参数**区分, 不能靠换 URL —— 而在参数含义没确认之前,
+     * **不许瞎试**(每个 int/boolean 位都猜一轮等于让用户当试验品)。
+     *
+     * 同时 v297 探针把真正的失败点钉死了:
+     * ```
+     * initial: bigImgPath=SERVERID://…  offset=null    totalLen=null    compressType=1
+     * after  : bigImgPath=7f2bafcd….jpg offset=464806  totalLen=464806  compressType=0
+     * ```
+     * 而消息 XML 里 `hevc_mid_size=464806` —— **正好等于下载后的 totalLen**。也就是说这一版
+     * 下的只是 **HEVC 压缩中间件**, 连 `length=2218605` 的"大图"都不是, 更别说
+     * `hdlength=6102798` 的原图。类文档里那句「该通道**优先下载原图**」至此被证伪。
+     */
+    private fun logDownloadServiceMembers() {
+        if (!probeServiceMembers.compareAndSet(false, true)) return
+        runCatching {
+            val clazz = WeServiceApi.methodDownloadImageServiceDownloadImage.method.declaringClass
+            WeLogger.i(TAG, "探针[下载服务类] ${clazz.name}")
+            clazz.declaredMethods
+                .filter { it.name == WeServiceApi.methodDownloadImageServiceDownloadImage.method.name }
+                .forEach { m ->
+                    WeLogger.i(
+                        TAG,
+                        "探针[下载服务方法] ${m.name}(${m.parameterTypes.joinToString(", ") { it.simpleName }})" +
+                            " -> ${m.returnType.simpleName}"
+                    )
+                }
+        }.onFailure { WeLogger.e(TAG, "探针[下载服务类] 失败", it) }
+    }
+
+    private val probeServiceMembers = java.util.concurrent.atomic.AtomicBoolean(false)
+
     private fun triggerDownload(imgLocalId: Long, talker: String): Boolean {
+        logDownloadServiceMembers()
         return try {
             val m = WeServiceApi.methodDownloadImageServiceDownloadImage.method
             val downloadService = m.declaringClass.createInstance()
@@ -2331,8 +2393,19 @@ object WeMessageApi : ApiFeature(), IResolveDex {
                 }
             }
 
-            val result = m.invoke(downloadService, imgLocalId, msgIdTalker, 0, null, 0, listener, -1, false)
-            WeLogger.i(TAG, "triggerDownload result=$result")
+            // v298 实验: 尾参 boolean 传 true。
+            // 理由: 三档画质共用同一个 CDN 地址(见「探针[画质档位]」的 三档同CDN=true),
+            // 所以"要哪一档"只能由**调用参数**决定, 而这个尾 false 是唯一未利用的开关。
+            // 本次同时把该类的所有同名重载签名打出来(见 logDownloadServiceMembers),
+            // 无论实验成败, 下一轮都能定论。
+            val hdFlag = true
+            val result = try {
+                m.invoke(downloadService, imgLocalId, msgIdTalker, 0, null, 0, listener, -1, hdFlag)
+            } catch (e: IllegalArgumentException) {
+                WeLogger.w(TAG, "尾参 boolean 不接受 true (${e.message}), 退回 false")
+                m.invoke(downloadService, imgLocalId, msgIdTalker, 0, null, 0, listener, -1, false)
+            }
+            WeLogger.i(TAG, "triggerDownload result=$result hdFlag=$hdFlag localId=$imgLocalId")
             (result as? Int)?.let { it >= 0 } ?: false
         } catch (e: Exception) {
             WeLogger.e(TAG, "triggerDownload failed", e)

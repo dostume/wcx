@@ -2,6 +2,41 @@
 
 基线为上游 v273，保留本仓库自建功能 + 联系人选择器改进。
 
+### 本版新增/修复（v298）
+
+**后台自动加载原视频已修复；原图：探针锁定真因，开始点对点求解**
+
+- **视频侧已修好**（v297 生效，本版日志确认）：
+  ```
+  01:35:21.179 原视频下载已发起: url=2610160135195401 accepted=true   ← v296 是 false
+  ```
+  v297 把 `accepted=false` 的归因改对了、并加了「连续被拒即结案」，不再空转。
+- **图片侧** v297 探针把答案问出来了 —— `<img>` 元素共 **18 个属性**，关键三条：
+  ```
+  cdnthumburl == cdnmidimgurl == cdnbigimgurl   （同一个 CDN 地址）
+  cdnhdheight=0  cdnhdwidth=0                   （没有 HD 专用字段）
+  length=2218605     ← 大图
+  hdlength=6102798   ← 原图
+  hevc_mid_size=464806
+  ```
+  **没有 `cdnrawimgurl` 那样的独立 HD 资源**（视频侧有），所以"要哪一档画质"
+  只能由**调用参数**决定，不能靠换 URL。
+- 探针同时把真正的失败点钉死 —— `ImgInfo2` 下载前后的整行对比：
+  ```
+  之前: bigImgPath=SERVERID://…  offset=null    totalLen=null    compressType=1
+  之后: bigImgPath=7f2bafcd….jpg offset=464806  totalLen=464806  compressType=0
+  ```
+  **下完的 464806 正好等于 `hevc_mid_size`** —— 微信给的是 **HEVC 压缩中间件**，
+  连 `length=2218605` 的"大图"都没到，更别说 `hdlength=6102798` 的原图。
+  至此类文档里那句「该通道**优先下载原图**」被彻底证伪。
+- 本版动作：
+  1. `logDownloadServiceMembers()`：把 `DownloadImgService` 上所有同名重载的**完整签名**打出来，
+     前提 discloses —— 参数含义没确认之前**不许瞎试**（每个位都猜一轮等于让用户当试验品）。
+  2. `探针[画质档位]`：直接回答"微信给了我哪一档"（比对 hevc_mid / length / hdlength），
+     不用人肉比数字。
+  3. 尾参 boolean 由 `false` 改为 `true` 做一次**定向实验**（三档共 CDN，这个位是唯一未利用的开关）；
+     若该位不接受 true 会自动退回 `false` 并记录。
+
 ### 本版新增/修复（v297）
 
 **后台自动加载原图/原视频：诊断日志证伪了 v294~v296 的判据，改用探针定位真正链路**
