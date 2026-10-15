@@ -2066,6 +2066,7 @@ object WeMessageApi : ApiFeature(), IResolveDex {
 
         // 权威的"原图应该多大" —— 消息 XML 的 hdlength, 落库即有。
         val expectedBytes = queryExpectedImageBytes(msgSvrId)
+        logImageDiagnose(msgSvrId, targetRow, expectedBytes)
         WeLogger.i(
             TAG,
             "原图目标大小: svrId=$msgSvrId expected=${expectedBytes}B " +
@@ -2148,6 +2149,49 @@ object WeMessageApi : ApiFeature(), IResolveDex {
             .firstNotNullOfOrNull { name ->
                 resolveImageFile(name)?.takeIf { it.isRegularFile() && it.fileSize() > 0 }
             }
+
+    /**
+     * v296 诊断: 把「为什么字节数不涨」这件事一次性说清。
+     *
+     * v295 设备日志 (2026-10-15 17:15~17:18) 显示 `triggerDownload result=0` 三次都"成功"，
+     * 但 `onDisk` 恒定在 212639B / 150791B / 57150B 一动不动 —— 连用户自己点「查看原图」
+     * （微信亲自下）之后 71 秒仍然没变。这不是"慢"，是**根本没在下载**。
+     *
+     * 现有日志缺三样决定性信息，下一版必须打出来:
+     *  1. 账号目录下到底有几个 32 位目录、`resolveImageFile` 选了哪个
+     *     —— 它用"最近修改时间最大"挑账号，多账号/多用户设备上会挑错，
+     *     于是 bigImgPath 解析到别的账号目录 → 文件不存在 → 回退到 midImgPath(缩略图)，
+     *     我们就对着 212KB 的缩略图死等，微信下的是另一个目录；
+     *  2. bigImgPath / hevcPath / midImgPath 三个字段的原始值（是不是 SERVERID://）；
+     *  3. ImgInfo2 行的 offset/totalLen（微信自己认为下了多少）。
+     */
+    private fun logImageDiagnose(msgSvrId: Long, row: ImgInfoRow, expectedBytes: Long) {
+        val microMsgPath = HostInfo.application.filesDir.asPath.parent / "MicroMsg"
+        val accountDirs = runCatching {
+            microMsgPath.listDirectoryEntries()
+                .filter { Files.isDirectory(it) && it.fileName.toString().length == 32 }
+                .map { "${it.fileName}(${Files.getLastModifiedTime(it).toMillis()})" }
+        }.getOrDefault(emptyList())
+        fun desc(name: String?) = when {
+            name.isNullOrEmpty() -> "(空)"
+            name.startsWith("SERVERID://") -> "SERVERID://… (未落地)"
+            name.length < 4 -> "$name (太短)"
+            else -> runCatching {
+                val p = resolveImageFile(name)
+                if (p == null) "$name → 解析失败"
+                else "$name → ${if (p.isRegularFile()) "${Files.size(p)}B" else "不存在"}"
+            }.getOrDefault("$name → 异常")
+        }
+        val progress = queryImageProgress(row.localId)
+        WeLogger.i(
+            TAG,
+            "诊断 svrId=$msgSvrId localId=${row.localId} expected=${expectedBytes}B | " +
+                    "big=${desc(row.bigImgPath)} | hevc=${desc(row.hevcPath)} | " +
+                    "mid=${desc(row.midImgPath)} | " +
+                    "offset=${progress?.offset ?: -1}/${progress?.totalLen ?: -1} | " +
+                    "账号目录[${accountDirs.joinToString(",")}]"
+        )
+    }
 
     private fun Path?.sizeOrZero(): Long =
         this?.let { runCatching { Files.size(it) }.getOrDefault(0L) } ?: 0L
@@ -2234,11 +2278,25 @@ object WeMessageApi : ApiFeature(), IResolveDex {
         // image2/xx/yy/<name> 需要文件名至少 4 个字符
         if (bigImgPath.length < 4) return null
         val microMsgPath = HostInfo.application.filesDir.asPath.parent / "MicroMsg"
-        val accountDir = microMsgPath.listDirectoryEntries()
+        val accountDirs = microMsgPath.listDirectoryEntries()
             .filter { Files.isDirectory(it) && it.fileName.toString().length == 32 }
-            .maxByOrNull { Files.getLastModifiedTime(it).toMillis() }
-            ?: return null
-        return accountDir / "image2" / bigImgPath.take(2) / bigImgPath.substring(2, 4) / bigImgPath
+            .sortedByDescending { Files.getLastModifiedTime(it).toMillis() }
+        if (accountDirs.isEmpty()) return null
+        val rel = listOf("image2", bigImgPath.take(2), bigImgPath.substring(2, 4), bigImgPath)
+            .joinToString("/")
+        // v296: 原实现只取"最近修改时间最大"的那个账号目录就返回, 多账号 / 多用户
+        // (android:userId) 设备上会挑错 —— 于是 bigImgPath 解析到别的账号下 → 文件不存在
+        // → resolveExistingImageFile 回退到 midImgPath(缩略图), 于是我们对着 200KB 的
+        // 缩略图死等3 分钟, 而微信把原图下在另一个目录。
+        // 设备日志 2026-10-15 17:15 证据: onDisk 恒定 212639B/4159123B 不动,
+        // 连用户亲自点「查看原图」后 71 秒仍不变。
+        // 现在**按修改时间顺序挨个试**, 谁有文件用谁; 都没有才返回 null。
+        for (dir in accountDirs) {
+            val p = dir.resolve(rel)
+            if (p.isRegularFile() && p.fileSize() > 0) return p
+        }
+        // 一个都没有时返回最近账号下的路径 (保持旧行为, 让调用方能打出"不存在"的诊断)
+        return accountDirs.first().resolve(rel)
     }
 
     /**
