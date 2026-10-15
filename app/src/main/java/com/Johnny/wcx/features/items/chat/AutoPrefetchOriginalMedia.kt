@@ -177,6 +177,28 @@ import java.util.concurrent.ConcurrentHashMap
  * (列名运行时探测), 并要求磁盘字节数不低于 `totalLen`; 拿不到长度信息 (本地图 / GIF /
  * 表结构变化) 时退回老行为, 不把功能卡死。等待策略同步改为进度感知
  * (`IMG_IDLE_TIMEOUT_MS` 45s 无进展才补一次触发, `IMG_MAX_WAIT_MS` 3min 总预算)。
+ *
+ * ### v295: v294 的兜底方向反了, 修回来 + 修重复触发
+ *
+ * 上面 v294 那版的判据写反了方向, 装上去**1 秒**就打「原图已落地」, 比修之前还快:
+ * ```
+ * 15:49:51.137 triggerDownload result=0
+ * 15:49:52.140 ImgInfo2 列探测: totalLen=totalLen offset=offset
+ * 15:49:52.142 image landed: 触发 1 次, 用时 1s             ← 1 秒就宣布成功
+ * 15:51:41.089 无感加载「查看原图」: 查看原图 2MB            ← 112 秒后仍未下好
+ * ```
+ * 因为**下载刚触发时 `ImgInfo2.totalLen` 就是 0** (要等 CDN 回包才填), 正好命中
+ * 「`totalLen <= 0` → 退回『文件存在即算』」那条兜底, 又一次在微信预创建的空壳文件上
+ * 宣布成功。**教训: 拿不到进度 ≠ 可以当成完成, 任何兜底都不能朝「提前宣布成功」的方向退。**
+ *
+ * 现在改用**消息 XML 的 `<img hdlength="...">`** 作权威判据 —— 那正是微信「查看原图 2MB」
+ * 那个数字的来源, 落库即有、不依赖下载进度; 进度观测也改为以**磁盘字节数**为准。
+ *
+ * 另一处: 日志里同一条消息 `start cdn download` 打了 **3 次** —— 本功能与
+ * `AutoCacheImages` 各有各的去重集合 (`inFlight` / `pendingSvrIds`), 彼此看不见, 而
+ * 微信的下载任务被重复触发会互相打断 (视频侧 v290 早已踩过)。去重因此上移到
+ * `WeMessageApi.ensureImageCachedFile` 的 single-flight: 同一张图同一时刻只有一个功能在下,
+ * 其余的搭车等结果。
  */
 @Feature(
     name = "后台自动加载原图/原视频",

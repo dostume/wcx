@@ -67,6 +67,7 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.concurrent.thread
 import kotlin.io.path.Path
 import kotlin.io.path.absolutePathString
@@ -1881,22 +1882,63 @@ object WeMessageApi : ApiFeature(), IResolveDex {
      * 14:49:50.887 原图已落地: .../image2/2b/8f/2b8f...jpg   ← 2.3 秒就宣布成功
      * 14:50:57.317 无感加载「查看原图」: 查看原图 3MB (Button) ← 69 秒后微信仍说没下好
      * ```
-     * 改用**微信内部同款口径**: `ImgInfo2` 行的 `totalLen == offset`（微信就是按这两列
-     * 判完成，`iscomplete` 不可信：DEFAULT 1）。拿不到长度信息（本地图 / GIF / 表结构变了）
-     * 时退回老行为，不把功能卡死。
+     * 改用**消息 XML 里的原图字节数**（`<img hdlength="...">`）作为权威判据 —— 这正是
+     * 微信「查看原图 2MB」那个数字的来源，落库即有、**不依赖下载进度**，所以刚触发时
+     * 就能立刻判断"还差多少"，不会被进度列的延迟写入骗到。
+     *
+     * v294 曾试过用 `ImgInfo2.totalLen == offset`（微信内部口径），但**方向反了**：
+     * 下载刚触发时 totalLen 还是 0（要等 CDN 回包才填），于是命中了
+     * `totalLen <= 0 → 算已完成` 的兜底，1 秒内就宣布"原图已落地" —— 拿到的是微信
+     * 预创建的空壳文件。设备日志 2026-10-15 15:49 实锤：
+     * ```
+     * 15:49:51.137 triggerDownload result=0
+     * 15:49:52.140 ImgInfo2 列探测: totalLen=totalLen offset=offset
+     * 15:49:52.142 image landed: 触发 1 次, 用时 1s            ← 1 秒就宣布成功
+     * 15:51:41.089 无感加载「查看原图」: 查看原图 2MB           ← 112 秒后仍未下好
+     * ```
+     * **教训：拿不到进度 ≠ 可以当成完成。任何兜底都不能朝"提前宣布成功"的方向退。**
      */
-    private fun resolveExistingImageFile(row: ImgInfoRow): Path? {
+    private fun resolveExistingImageFile(row: ImgInfoRow, expectedBytes: Long): Path? {
         val file = listOfNotNull(row.bigImgPath, row.hevcPath, row.midImgPath)
             .filter { it.isNotEmpty() && !it.startsWith("SERVERID://") }
             .firstNotNullOfOrNull { name ->
                 resolveImageFile(name)?.takeIf { it.isRegularFile() && it.fileSize() > 0 }
             } ?: return null
 
-        val progress = queryImageProgress(row.localId) ?: return file
-        if (progress.totalLen <= 0L) return file
-        if (progress.offset < progress.totalLen) return null
-        if (Files.size(file) < progress.totalLen) return null
+        // 权威判据: 消息 XML 的 hdlength (原图字节数)。拿不到才退到 ImgInfo2.totalLen,
+        // 且只用它的 > 0 部分 —— 0 意味着"还没开始下", 不能当完成。
+        val expected = if (expectedBytes > 0L) {
+            expectedBytes
+        } else {
+            queryImageProgress(row.localId)?.totalLen?.takeIf { it > 0L } ?: 0L
+        }
+        if (expected <= 0L) {
+            // 真的拿不到任何长度信息 (本地图 / GIF / 表结构变了)。此时只能按文件存在算,
+            // 明确记一笔, 让下次日志能一眼分辨"确实没有长度"和"判据失效了"。
+            WeLogger.w(
+                TAG,
+                "resolveExistingImageFile: 拿不到原图字节数 (localId=${row.localId}), " +
+                        "只能按文件存在判定 -> ${file.fileName} (${Files.size(file)}B)"
+            )
+            return file
+        }
+        val size = Files.size(file)
+        if (size < expected) return null
         return file
+    }
+
+    /** 从 message.content 的图片 XML 里取原图字节数 (`hdlength`, 退回 `length`)。 */
+    private fun queryExpectedImageBytes(msgSvrId: Long): Long {
+        val content = runCatching {
+            WeDatabaseApi.rawQuery(
+                "SELECT content FROM message WHERE msgSvrId=? LIMIT 1",
+                arrayOf<Any>(msgSvrId)
+            ).use { c -> if (c.moveToFirst()) c.getString(0) else null }
+        }.getOrNull().orEmpty()
+        if (content.isEmpty() || !content.contains("<img")) return 0L
+        return extractXmlAttr(content, "hdlength").toLongOrNull()?.takeIf { it > 0L }
+            ?: extractXmlAttr(content, "length").toLongOrNull()?.takeIf { it > 0L }
+            ?: 0L
     }
 
     /** 某张图片行的下载进度 (微信判定完成的口径: totalLen == offset)。 */
@@ -1961,7 +2003,56 @@ object WeMessageApi : ApiFeature(), IResolveDex {
     private const val IMG_MAX_WAIT_MS = 3 * 60_000L
     private const val IMG_MAX_TRIGGER = 3
 
+    /** v295: 搭车等其它功能下载时的等待上限 (对方总预算是 3min, 这里留出余量后自行放弃)。 */
+    private const val IMG_FOLLOW_WAIT_MS = 3 * 60_000L
+
+    /**
+     * v295: 同一个 msgSvrId 的下载 single-flight。
+     *
+     * 「后台自动加载原图」和「自动缓存图片」是两个独立功能，各有自己的去重集合
+     * (inFlight / pendingSvrIds)，彼此看不见 —— 同一条消息会被两路同时下发
+     * `triggerDownload`。微信的下载任务被重复触发会**互相打断**（视频侧 v290 已经踩过：
+     * "重复触发会打断微信 CDN 任务"），大文件永远下不完。
+     * 设备日志 2026-10-15 15:49 实锤：同一条消息 `start cdn download` 打了 **3 次**。
+     * 所以去重必须做在**公共通道**上，而不是各功能内部。
+     */
+    private val imageDownloadInFlight = ConcurrentHashMap.newKeySet<Long>()
+
     private fun ensureImageCachedFile(msgSvrId: Long): Path? {
+        if (!imageDownloadInFlight.add(msgSvrId)) {
+            // 别人正在下这条图, 直接搭车等它的结果, 不要再 triggerDownload。
+            // 每秒先试一次「判定」—— 文件一落地就能立刻返回, 不用等对方收尾;
+            // 对方一旦退出 in-flight(成功或放弃)而文件仍不完整, 就返回 null 交由调用方重试。
+            val deadline = System.currentTimeMillis() + IMG_FOLLOW_WAIT_MS
+            while (System.currentTimeMillis() < deadline) {
+                Thread.sleep(1_000)
+                resolveCompletedImage(msgSvrId)?.let {
+                    WeLogger.i(TAG, "搭车成功: svrId=$msgSvrId 的原图由其它功能下完 -> $it")
+                    return it
+                }
+                if (msgSvrId !in imageDownloadInFlight) {
+                    WeLogger.w(TAG, "同 svrId=$msgSvrId 的其它下载已结束但文件仍不完整, 本次放弃")
+                    return null
+                }
+            }
+            WeLogger.w(TAG, "等待 svrId=$msgSvrId 的其它下载超时, 本次放弃")
+            return null
+        }
+        return try {
+            doEnsureImageCachedFile(msgSvrId)
+        } finally {
+            imageDownloadInFlight.remove(msgSvrId)
+        }
+    }
+
+    /** 只做判定, 不触发下载 (给 single-flight 的等待方复用)。 */
+    private fun resolveCompletedImage(msgSvrId: Long): Path? {
+        val baseRow = queryImgInfoRow(msgSvrId) ?: return null
+        val targetRow = baseRow.hdImgId.takeIf { it > 0 }?.let { queryImgInfoRowById(it) } ?: baseRow
+        return resolveExistingImageFile(targetRow, queryExpectedImageBytes(msgSvrId))
+    }
+
+    private fun doEnsureImageCachedFile(msgSvrId: Long): Path? {
         val baseRow = queryImgInfoRow(msgSvrId) ?: run {
             WeLogger.w(TAG, "no ImgInfo2 row for msgSvrId=$msgSvrId")
             return null
@@ -1973,8 +2064,17 @@ object WeMessageApi : ApiFeature(), IResolveDex {
             ?.also { WeLogger.i(TAG, "image has original (hdImgId=${baseRow.hdImgId}), downloading original") }
             ?: baseRow
 
+        // 权威的"原图应该多大" —— 消息 XML 的 hdlength, 落库即有。
+        val expectedBytes = queryExpectedImageBytes(msgSvrId)
+        WeLogger.i(
+            TAG,
+            "原图目标大小: svrId=$msgSvrId expected=${expectedBytes}B " +
+                    "(localId=${targetRow.localId}, 已有文件=" +
+                    "${resolveExistingImageFileUnchecked(targetRow).sizeOrZero()}B)"
+        )
+
         // 已经下完 (含"文件在但只下了一半"的判据) 则直接返回
-        resolveExistingImageFile(targetRow)?.let { return it }
+        resolveExistingImageFile(targetRow, expectedBytes)?.let { return it }
 
         val talker = targetRow.talker.ifEmpty { baseRow.talker }
         WeLogger.i(TAG, "start cdn download: svrId=$msgSvrId localId=${targetRow.localId} talker=$talker")
@@ -1982,10 +2082,10 @@ object WeMessageApi : ApiFeature(), IResolveDex {
         // v294: 进度感知等待 (原先是「每轮触发 + 空转 20 秒」共 3 轮, 慢网络上必然误判失败,
         // 而快网络又会在半成品上误判成功):
         //  - 首轮必触发; 之后**只在完全无进展**时补触发 (实测单次触发可能被微信静默丢弃);
-        //  - 只要 offset 在涨就一直等, 直到 [IMG_MAX_WAIT_MS] 的总预算;
+        //  - 只要磁盘字节数在涨就一直等, 直到 [IMG_MAX_WAIT_MS] 的总预算;
         //  - 每 10 秒打一条进度, 便于下次直接定论。
         val startAt = System.currentTimeMillis()
-        var lastOffset = -1L
+        var lastSize = -1L
         var lastProgressAt = startAt
         var lastLogAt = startAt
         var triggerCount = 0
@@ -1997,7 +2097,7 @@ object WeMessageApi : ApiFeature(), IResolveDex {
                     WeLogger.w(
                         TAG,
                         "image give up: 触发 $triggerCount 次仍无进展 (svrId=$msgSvrId, " +
-                                "localId=${targetRow.localId}, offset=$lastOffset)"
+                                "localId=${targetRow.localId}, ${lastSize}B/${expectedBytes}B)"
                     )
                     break
                 }
@@ -2012,8 +2112,9 @@ object WeMessageApi : ApiFeature(), IResolveDex {
 
             Thread.sleep(1_000)
 
+            // 落地判据只认"磁盘字节数达到 hdlength", 不看微信的进度列 (刚触发时那些列还是 0)。
             val row = queryImgInfoRowById(targetRow.localId)
-            if (row != null) resolveExistingImageFile(row)?.let {
+            if (row != null) resolveExistingImageFile(row, expectedBytes)?.let {
                 WeLogger.i(
                     TAG,
                     "image landed: svrId=$msgSvrId localId=${targetRow.localId} " +
@@ -2022,9 +2123,10 @@ object WeMessageApi : ApiFeature(), IResolveDex {
                 return it
             }
 
-            val progress = queryImageProgress(targetRow.localId)
-            if (progress != null && progress.offset != lastOffset) {
-                lastOffset = progress.offset
+            // 进展以**磁盘字节数**为准 —— 微信写文件是我们能观测到的唯一硬事实
+            val size = resolveExistingImageFileUnchecked(targetRow).sizeOrZero()
+            if (size != lastSize) {
+                lastSize = size
                 lastProgressAt = System.currentTimeMillis()
             }
             if (System.currentTimeMillis() - lastLogAt >= 10_000) {
@@ -2032,12 +2134,23 @@ object WeMessageApi : ApiFeature(), IResolveDex {
                 WeLogger.i(
                     TAG,
                     "image downloading: svrId=$msgSvrId localId=${targetRow.localId} " +
-                            "offset=$lastOffset/${progress?.totalLen ?: -1}"
+                            "onDisk=$size/${if (expectedBytes > 0L) expectedBytes else -1}B"
                 )
             }
         }
         return null
     }
+
+    /** 只做「文件在哪、多大」，不做完成度判定 —— 给进度观测用。 */
+    private fun resolveExistingImageFileUnchecked(row: ImgInfoRow): Path? =
+        listOfNotNull(row.bigImgPath, row.hevcPath, row.midImgPath)
+            .filter { it.isNotEmpty() && !it.startsWith("SERVERID://") }
+            .firstNotNullOfOrNull { name ->
+                resolveImageFile(name)?.takeIf { it.isRegularFile() && it.fileSize() > 0 }
+            }
+
+    private fun Path?.sizeOrZero(): Long =
+        this?.let { runCatching { Files.size(it) }.getOrDefault(0L) } ?: 0L
 
     /**
      * 缓存图片: 让微信把大图从 CDN 下载到它自己的 image2/ 存储 (相当于在聊天里点击图片下载)。
