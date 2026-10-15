@@ -1927,7 +1927,21 @@ object WeMessageApi : ApiFeature(), IResolveDex {
         return file
     }
 
-    /** 从 message.content 的图片 XML 里取原图字节数 (`hdlength`, 退回 `length`)。 */
+    /**
+     * v297: **这个函数是错的, 但暂时保留, 供探针对照。**
+     *
+     * 它返回 `hdlength`(发送方声明的原始字节数)。v295~v296 把它当「这张图应该多大」的权威判据,
+     * 而 v296 设备日志证明这是**张冠李戴**:
+     * ```
+     * localId=37956  big → 65740B   offset=65740/65740   hdlength=2919329
+     * ```
+     * `offset == totalLen` 恒成立 → 微信认为 `hdImgId` 那行**已经下完**; 而 `hdlength` 是原图的
+     * 字节数, 接收方微信**从未把它落盘**(不在 `ImgInfo2` 里)。于是拿它当完成判据, 等的是一个
+     * **永远不会发生的未来**。
+     *
+     * 真正的原图走另一条 CDN 链路(视频侧对称字段 `cdnrawvideourl`), 字段名待v297 探针确认。
+     * 在确认之前, **不要再把它当作完成判据使用** —— 详见 `AutoPrefetchOriginalMedia` 类文档 v297 节。
+     */
     private fun queryExpectedImageBytes(msgSvrId: Long): Long {
         val content = runCatching {
             WeDatabaseApi.rawQuery(
@@ -2191,6 +2205,81 @@ object WeMessageApi : ApiFeature(), IResolveDex {
                     "offset=${progress?.offset ?: -1}/${progress?.totalLen ?: -1} | " +
                     "账号目录[${accountDirs.joinToString(",")}]"
         )
+        // v297: 判据已被证伪, 换一轮彻底探针 —— 把图片 XML 的全部属性 + ImgInfo2 整行全列打出来。
+        logImageXmlProbe(msgSvrId, row)
+    }
+
+    /**
+     * v297 探针: 一次性把「原图到底在哪」问清楚。
+     *
+     * v296 日志已经**证伪了 v295/v296 的前提**, 证据是这三组数字:
+     * ```
+     * localId=37956  big → 65740B   offset=65740/65740   hdlength=2919329
+     * localId=37952  big → 80212B   offset=80212/80212   hdlength=3251086
+     * localId=19507  big → 57150B   offset=57150/57150   hdlength=2777401
+     * ```
+     * `offset == totalLen` **恒成立**, 且 `totalLen` 与磁盘字节数一字不差 ——
+     * 微信自己的数据库就说「这几行已经下载完成」。而 `totalLen` 只有 `hdlength` 的 2.1%~2.5%。
+     *
+     * 所以 `triggerDownload` 三次 `result=0` 不是"触发失败", 而是**微信认为这行已完成, 任务被
+     * 静默忽略**(与视频侧 v290 的 `accepted=false` 同一种拒绝)。`hdImgId`/`bigImgPath` 指向的
+     * 是 `cdnbigimgurl` 对应的那张**压缩大图**, 压根不是原图 —— `hdlength` 是发送方的原始字节数,
+     * 接收方微信从未把它落盘, 它不在 `ImgInfo2` 里。
+     *
+     * 用户实测: 点开图片后微信**确实**下到了原图 → 原图存在, 但走的是**另一条 CDN 链路**
+     * (视频侧对称字段是 `cdnrawvideourl`)。现有代码从来没读过图片侧那个字段 ——
+     * `ImageMessage` 模型里只有 bigImgUrl/midImgUrl/thumbUrl, 全是压缩图。
+     *
+     * **不要猜字段名。** 这一轮把 `<img>` 元素的**全部属性**和 ImgInfo2 的**整行所有列**
+     * 原样打出, 下一轮直接定论。
+     */
+    private fun logImageXmlProbe(msgSvrId: Long, row: ImgInfoRow) {
+        val content = runCatching {
+            WeDatabaseApi.rawQuery(
+                "SELECT content FROM message WHERE msgSvrId=? LIMIT 1",
+                arrayOf<Any>(msgSvrId)
+            ).use { c -> if (c.moveToFirst()) c.getString(0) else null }
+        }.getOrNull().orEmpty()
+
+        val imgTag = runCatching {
+            val i = content.indexOf("<img")
+            if (i < 0) "" else content.substring(i, content.indexOf('>', i).let { if (it < 0) i + 1 else it } + 1)
+        }.getOrDefault("")
+        if (imgTag.isEmpty()) {
+            WeLogger.w(TAG, "探针[图片XML] svrId=$msgSvrId: content 里没有 <img> (len=${content.length})")
+        } else {
+            val attrs = Regex("""([\w:]+)="([^"]*)"""").findAll(imgTag)
+                .map { "${it.groupValues[1]}=${it.groupValues[2]}" }
+                .toList()
+            // 属性可能很多, 分两行打, 避免单行过长被截断
+            WeLogger.i(TAG, "探针[图片XML] svrId=$msgSvrId 属性(${attrs.size}) 上半: ${attrs.take(20).joinToString(" ")}")
+            WeLogger.i(TAG, "探针[图片XML] svrId=$msgSvrId 属性(${attrs.size}) 下半: ${attrs.drop(20).joinToString(" ")}")
+            val cdn = attrs.filter { it.startsWith("cdn") || it.contains("aeskey") || it.endsWith("length") }
+            WeLogger.i(TAG, "探针[图片XML] svrId=$msgSvrId CDN/长度字段: ${cdn.joinToString(" ")}")
+        }
+
+        // ImgInfo2 整行所有列 —— 看是否还有我们没读的字段指向原图
+        runCatching {
+            WeDatabaseApi.rawQuery(
+                "SELECT * FROM ImgInfo2 WHERE id=? LIMIT 1",
+                arrayOf<Any>(row.localId)
+            ).use { c ->
+                if (c.moveToFirst()) {
+                    val n = c.columnCount
+                    val parts = (0 until n).map { i ->
+                        val name = c.getColumnName(i)
+                        val v = runCatching { c.getString(i) }.getOrNull()
+                        "$name=${v?.takeIf { it.isNotEmpty() } ?: if (runCatching { c.isNull(i) }.getOrDefault(true)) "null" else "…"}"
+                    }
+                    // 列数可能很多(40+), 分三行打
+                    parts.chunked(15).forEachIndexed { idx, chunk ->
+                        WeLogger.i(TAG, "探针[ImgInfo2整行] svrId=$msgSvrId 第${idx + 1}段: ${chunk.joinToString(" ")}")
+                    }
+                } else {
+                    WeLogger.w(TAG, "探针[ImgInfo2整行] svrId=$msgSvrId localId=${row.localId} 查不到")
+                }
+            }
+        }.onFailure { WeLogger.e(TAG, "探针[ImgInfo2整行] 失败 svrId=$msgSvrId", it) }
     }
 
     private fun Path?.sizeOrZero(): Long =
