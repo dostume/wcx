@@ -451,6 +451,9 @@ object WeMessageApi : ApiFeature(), IResolveDex {
     private const val MAX_EMOJI_DIMENSION = 1024
     private const val STICKER_SEND_CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000L
 
+    /** 图片下载入口 `o11.j.b(long, MsgIdTalker, int, Object, int, w, int, boolean)` 的第 2 参。 */
+    private const val MSG_ID_TALKER = "com.tencent.mm.plugin.msg.MsgIdTalker"
+
     private enum class StickerFileFormat {
         GIF,
         PNG,
@@ -2355,27 +2358,102 @@ object WeMessageApi : ApiFeature(), IResolveDex {
      * 下的只是 **HEVC 压缩中间件**, 连 `length=2218605` 的"大图"都不是, 更别说
      * `hdlength=6102798` 的原图。类文档里那句「该通道**优先下载原图**」至此被证伪。
      */
-    private fun logDownloadServiceMembers() {
+    /**
+     * v299: **v298 的尾参 boolean 实验失败**（`hdFlag=true` 被接受但档位没变），
+     * 说明它不是画质开关。本函数把「猜参数」升级为「抓微信自己的调用」——
+     * 这正是视频侧 `探针[下载任务 gallery.f]` 用过的、被证明有效的模式。
+     *
+     * 三件事:
+     * 1. 把 `o11.j`(ModelImage.DownloadImgService) 上**所有**方法原样打出。
+     *    v298 只过滤了与我们同名的 `b`, 万一 HD 下载是另一个方法名就永远看不见。
+     * 2. 把尾参 `w`(回调接口) 的所有方法打出 —— 回调里可能带画质信息。
+     * 3. **hook `b`, 把每次调用的全部 8 个参数 + 返回值打进日志**, 并用 ThreadLocal
+     *    区分「我们自己发的」和「微信自己发的」。用户点「查看原图」时微信走的必然
+     *    是正确的配方, 那一行就是答案。
+     */
+    private fun installImageDownloadProbe() {
         if (!probeServiceMembers.compareAndSet(false, true)) return
         runCatching {
-            val clazz = WeServiceApi.methodDownloadImageServiceDownloadImage.method.declaringClass
-            WeLogger.i(TAG, "探针[下载服务类] ${clazz.name}")
+            val delegate = WeServiceApi.methodDownloadImageServiceDownloadImage
+            val clazz = delegate.method.declaringClass
+            WeLogger.i(TAG, "探针[图片下载类] ${clazz.name} 方法总数=${clazz.declaredMethods.size}")
             clazz.declaredMethods
-                .filter { it.name == WeServiceApi.methodDownloadImageServiceDownloadImage.method.name }
+                .sortedWith(compareBy({ it.name }, { it.parameterTypes.size }))
                 .forEach { m ->
                     WeLogger.i(
                         TAG,
-                        "探针[下载服务方法] ${m.name}(${m.parameterTypes.joinToString(", ") { it.simpleName }})" +
+                        "探针[类方法] ${m.name}(${m.parameterTypes.joinToString(", ") { it.simpleName }})" +
                             " -> ${m.returnType.simpleName}"
                     )
                 }
-        }.onFailure { WeLogger.e(TAG, "探针[下载服务类] 失败", it) }
+
+            val wClass = delegate.method.parameterTypes[5]
+            val cbMethods = (wClass.methods + wClass.declaredMethods).distinctBy { it.toString() }
+            WeLogger.i(TAG, "探针[回调接口] ${wClass.name} 方法数=${cbMethods.size}")
+            cbMethods.forEach { m ->
+                WeLogger.i(
+                    TAG,
+                    "探针[回调方法] ${m.name}(${m.parameterTypes.joinToString(", ") { it.simpleName }})" +
+                        " -> ${m.returnType.simpleName}"
+                )
+            }
+
+            // hook: 抓每一次调用(含微信自己点「查看原图」那次)的真实参数。
+            // 范围 = 我们已知的 b + 所有参数里出现 MsgIdTalker 的方法(下载入口的特征),
+            // 这样即使 HD 走的是另一个方法名也照样抓得到, 又不至于把整个类都 hook 上。
+            // 加上限: 微信可能对列表里每张图都调一次, 不设上限会把日志冲爆。
+            val logged = java.util.concurrent.atomic.AtomicInteger(0)
+            val targets = clazz.declaredMethods.filter { m ->
+                !m.isSynthetic && m.parameterTypes.any { it.name == MSG_ID_TALKER } &&
+                    m.parameterTypes.size <= 10
+            }
+            WeLogger.i(TAG, "探针[hook 目标] 共 ${targets.size} 个: " +
+                targets.joinToString(", ") { "${it.name}/${it.parameterTypes.size}" })
+            targets.forEach { tm ->
+                runCatching {
+                    tm.hookAfter {
+                        if (logged.incrementAndGet() > 300) return@hookAfter
+                        val hp = this
+                        val who = if (ourDownloadCall.get() == true) "我们自己" else "微信侧"
+                        val args = hp.args
+                        val desc = buildString {
+                            append("${hp.method?.name}(")
+                            for (i in 0 until (args?.size ?: 0)) {
+                                if (i > 0) append(", ")
+                                append("$i=").append(describeProbeArg(args?.getOrNull(i)))
+                            }
+                            append(") -> ").append(hp.result)
+                        }
+                        WeLogger.i(TAG, "探针[调用] $who$desc")
+                    }
+                }.onFailure { WeLogger.w(TAG, "探针 hook 失败: ${tm.name}", it) }
+            }
+            WeLogger.i(TAG, "探针已装: 图片下载 ${clazz.name}")
+        }.onFailure { WeLogger.e(TAG, "探针[图片下载] 安装失败", it) }
+    }
+
+    /** 探针用: 把任意参数打成一行可读文本(含 Object 的真实类型, 这是定位画质开关的关键)。 */
+    private fun describeProbeArg(v: Any?): String = when (v) {
+        null -> "null"
+        is Int, is Long, is Short, is Byte, is Boolean, is Float, is Double -> v.toString()
+        is String -> "\"$v\""
+        is Array<*> -> "Array(${v.size})[${v.joinToString(", ") { describeProbeArg(it) }.take(300)}]"
+        is Class<*> -> "Class(${v.name})"
+        else -> {
+            val cn = v.javaClass.name
+            val s = runCatching { v.toString() }.getOrNull()?.take(160)
+            "$cn@${System.identityHashCode(v)}${if (s.isNullOrBlank()) "" else " ($s)"}"
+        }
     }
 
     private val probeServiceMembers = java.util.concurrent.atomic.AtomicBoolean(false)
 
+    /** 标记当前线程正在发起的下载是**我们自己**的, 供上面的 hook 区分调用来源。 */
+    private val ourDownloadCall = ThreadLocal.withInitial { false }
+
     private fun triggerDownload(imgLocalId: Long, talker: String): Boolean {
-        logDownloadServiceMembers()
+        installImageDownloadProbe()
+        ourDownloadCall.set(true)
         return try {
             val m = WeServiceApi.methodDownloadImageServiceDownloadImage.method
             val downloadService = m.declaringClass.createInstance()
@@ -2393,23 +2471,23 @@ object WeMessageApi : ApiFeature(), IResolveDex {
                 }
             }
 
-            // v298 实验: 尾参 boolean 传 true。
-            // 理由: 三档画质共用同一个 CDN 地址(见「探针[画质档位]」的 三档同CDN=true),
-            // 所以"要哪一档"只能由**调用参数**决定, 而这个尾 false 是唯一未利用的开关。
-            // 本次同时把该类的所有同名重载签名打出来(见 logDownloadServiceMembers),
-            // 无论实验成败, 下一轮都能定论。
-            val hdFlag = true
+            // v298 实验结论: 尾参 boolean 传 true **不改变画质档位**(仍是 HEVC 中间件),
+            // 所以它不是画质开关。本版退回 false(已知可用的值), 真正的配方靠
+            // 「探针[调用 b] 微信侧」那一行抓微信自己的参数。
+            val hdFlag = false
             val result = try {
                 m.invoke(downloadService, imgLocalId, msgIdTalker, 0, null, 0, listener, -1, hdFlag)
             } catch (e: IllegalArgumentException) {
-                WeLogger.w(TAG, "尾参 boolean 不接受 true (${e.message}), 退回 false")
-                m.invoke(downloadService, imgLocalId, msgIdTalker, 0, null, 0, listener, -1, false)
+                WeLogger.w(TAG, "尾参 boolean 不接受 false (${e.message}), 改试 true")
+                m.invoke(downloadService, imgLocalId, msgIdTalker, 0, null, 0, listener, -1, true)
             }
             WeLogger.i(TAG, "triggerDownload result=$result hdFlag=$hdFlag localId=$imgLocalId")
             (result as? Int)?.let { it >= 0 } ?: false
         } catch (e: Exception) {
             WeLogger.e(TAG, "triggerDownload failed", e)
             false
+        } finally {
+            ourDownloadCall.set(false)
         }
     }
 
