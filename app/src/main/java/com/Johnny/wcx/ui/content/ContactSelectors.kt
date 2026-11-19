@@ -158,7 +158,8 @@ fun BaseContactSelector(
     onItemClick: (IWeContact) -> Unit,
     onSelectAll: ((List<IWeContact>) -> Unit)? = null,
     onDeselectAll: ((List<IWeContact>) -> Unit)? = null,
-    onInvertSelection: ((List<IWeContact>) -> Unit)? = null
+    onInvertSelection: ((List<IWeContact>) -> Unit)? = null,
+    fullScreen: Boolean = true
 ) {
     val context = LocalContext.current
     val localizedContext = LocalContext.current
@@ -493,6 +494,7 @@ fun BaseContactSelector(
         modifier = modifier
             .fillMaxWidth()
             .fillMaxHeight(),
+        fullScreen = fullScreen,
         title = { Text(title) },
         text = {
             Column(modifier = Modifier.fillMaxSize()) {

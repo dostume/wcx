@@ -1,0 +1,672 @@
+package com.Johnny.wcx.features.items.chat
+
+import android.view.View
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ListItem
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Switch
+import androidx.compose.material3.Text
+import androidx.compose.material3.TimePicker
+import androidx.compose.material3.rememberTimePickerState
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import com.composables.icons.materialsymbols.MaterialSymbols
+import com.composables.icons.materialsymbols.outlined.Cancel
+import com.composables.icons.materialsymbols.outlined.Schedule
+import com.Johnny.wcx.features.api.core.WeDatabaseApi
+import com.Johnny.wcx.features.api.core.WeMessageApi
+import com.Johnny.wcx.features.api.core.WeServiceApi
+import com.Johnny.wcx.features.api.core.models.IWeContact
+import com.Johnny.wcx.features.api.core.models.MessageInfo
+import com.Johnny.wcx.features.api.core.models.MessageType
+import com.Johnny.wcx.features.api.ui.WeChatMessageContextMenuApi
+import com.Johnny.wcx.features.core.Feature
+import com.Johnny.wcx.features.core.SwitchFeature
+import com.Johnny.wcx.features.items.chat.FavoriteContentApi.FavoriteEntry
+import com.Johnny.wcx.features.items.chat.ScheduledMessage.MessageSegment
+import com.Johnny.wcx.features.items.chat.ScheduledMessage.MessageType as ScheduleMessageType
+import com.Johnny.wcx.features.items.chat.ScheduledMessage.ScheduleConfig
+import com.Johnny.wcx.ui.content.AlertDialogContent
+import com.Johnny.wcx.ui.content.Button
+import com.Johnny.wcx.ui.content.DefaultColumn
+import com.Johnny.wcx.ui.content.SingleContactSelector
+import com.Johnny.wcx.ui.content.TextButton
+import com.Johnny.wcx.ui.utils.CancelIcon
+import com.Johnny.wcx.ui.utils.SendIcon
+import com.Johnny.wcx.ui.utils.showComposeDialog
+import com.Johnny.wcx.utils.AudioUtils
+import com.Johnny.wcx.utils.WeLogger
+import com.Johnny.wcx.utils.android.showToast
+import com.Johnny.wcx.utils.android.showToastSuspend
+import com.Johnny.wcx.utils.fs.KnownPaths
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
+import kotlin.io.path.absolutePathString
+
+@Feature(
+    name = "消息定时发送菜单",
+    categories = ["聊天"],
+    description = "在消息长按菜单添加「定时发送」与「取消定时发送」: " +
+            "将当前会话的文字/图片/语音等消息一键创建为定时任务; 多选消息时创建一条多段消息任务"
+)
+object ScheduledMessageMenu : SwitchFeature(),
+    WeChatMessageContextMenuApi.IMenuItemsProvider {
+
+    private const val TAG = "ScheduledMessageMenu"
+
+    private val SUPPORTED_MSG_TYPES = setOf(
+        MessageType.TEXT,
+        MessageType.QUOTE,
+        MessageType.IMAGE,
+        MessageType.VOICE,
+        MessageType.VIDEO,
+        MessageType.MICRO_VIDEO,
+        MessageType.FILE
+    )
+
+    fun isSupportedMsg(msgInfo: MessageInfo): Boolean = msgInfo.type in SUPPORTED_MSG_TYPES
+
+    override fun onEnable() {
+        WeChatMessageContextMenuApi.addProvider(this)
+    }
+
+    override fun onDisable() {
+        WeChatMessageContextMenuApi.removeProvider(this)
+    }
+
+    override fun getMenuItems(): List<WeChatMessageContextMenuApi.MenuItem> {
+        return listOf(
+            WeChatMessageContextMenuApi.MenuItem(
+                777026,
+                "定时发送",
+                SendIcon,
+                MaterialSymbols.Outlined.Schedule,
+                isSupported = ::isSupportedMsg,
+                multiSelect = WeChatMessageContextMenuApi.MultiSelectSupport.Adapted(
+                    isSupported = { msgInfos ->
+                        msgInfos.isNotEmpty() && msgInfos.all { isSupportedMsg(it) }
+                    },
+                    onClick = { view, _, msgInfos ->
+                        showScheduleConfirmDialog(view, msgInfos)
+                    }
+                )
+            ) { view, _, msgInfo ->
+                showScheduleConfirmDialog(view, listOf(msgInfo))
+            },
+            WeChatMessageContextMenuApi.MenuItem(
+                777027,
+                "取消定时发送",
+                CancelIcon,
+                MaterialSymbols.Outlined.Cancel,
+                isSupported = { true },
+                // 取消定时发送针对当前会话的任务列表，多选消息下无意义
+                multiSelect = WeChatMessageContextMenuApi.MultiSelectSupport.Unsupported
+            ) { view, _, msgInfo ->
+                showCancelSchedulesDialog(view, msgInfo)
+            }
+        )
+    }
+
+    // ------------------------------------------------------------------
+    // 功能点一: 定时发送确认弹窗
+    // ------------------------------------------------------------------
+
+    private fun showScheduleConfirmDialog(view: View, msgInfos: List<MessageInfo>) {
+        CoroutineScope(Dispatchers.IO).launch {
+            val talker = msgInfos.first().talker
+            val talkerName = runCatching { WeDatabaseApi.getDisplayName(talker) }
+                .getOrDefault(talker)
+
+            // 复读式创建: 本地已有的媒体顺手备份防清理, 未落地的只记引用, 创建瞬时完成
+            val (segments, skipped) = buildSegments(msgInfos) ?: return@launch
+
+            withContext(Dispatchers.Main) {
+                if (skipped.isNotEmpty()) {
+                    showToast("已跳过无法处理的消息: ${skipped.joinToString("、")}")
+                }
+                showComposeDialog(view.context) {
+                    ScheduleConfirmDialogContent(
+                        talker = talker,
+                        talkerName = talkerName,
+                        segments = segments,
+                        onDismiss = onDismiss
+                    )
+                }
+            }
+        }
+    }
+
+    /**
+     * 将选中的消息按顺序转换为 MessageSegment 列表（一条多段任务）。
+     * 单条消息转换失败时跳过并继续（记录进 skipped 列表），
+     * 只有全部失败才返回 null（内部已 Toast 提示）。
+     */
+    @Suppress("DEPRECATION")
+    private suspend fun buildSegments(
+        msgInfos: List<MessageInfo>
+    ): Pair<List<MessageSegment>, List<String>>? {
+        val segments = mutableListOf<MessageSegment>()
+        val skipped = mutableListOf<String>()
+
+        msgInfos.forEachIndexed { index, rawMsgInfo ->
+            // 多选路径的消息对象可能只填充了部分字段, 先用数据库权威数据补全
+            val msgInfo = normalizeMsgInfo(rawMsgInfo)
+            val segment = runCatching { convertToSegment(msgInfo) }
+                .onFailure {
+                    WeLogger.e(TAG, "failed to convert message #${index + 1} (type=${msgInfo.typeCode})", it)
+                }
+                .getOrNull()
+
+            if (segment == null) {
+                skipped += "第${index + 1}条(${msgInfo.type?.displayName ?: "未知类型"})"
+            } else {
+                segments += segment
+            }
+        }
+
+        if (segments.isEmpty()) {
+            val detail = if (skipped.size == 1) skipped.first() else "所选消息均"
+            showToastSuspend("${detail}无法创建定时任务, 请查看模块日志了解详情")
+            return null
+        }
+
+        return segments to skipped
+    }
+
+    /**
+     * 多选路径传入的消息对象可能只填充了部分字段（缺 msgSvrId/msgId/imgPath 等）。
+     * 优先用本地 msgId 从 message 表重建权威完整对象；msgId 也缺失时按属性匹配兜底；
+     * 两者都失败则保留原对象，由 convertToSegment 内部继续兜底。
+     */
+    private fun normalizeMsgInfo(msgInfo: MessageInfo): MessageInfo {
+        return runCatching {
+            val instance = if (msgInfo.id > 0) {
+                WeMessageApi.getMsgInfoInstanceByMsgId(msgInfo.id)
+            } else {
+                WeMessageApi.findMsgIdByAttributes(
+                    talker = msgInfo.talker,
+                    createTime = msgInfo.createTime,
+                    typeCode = msgInfo.typeCode,
+                    isSend = msgInfo.isSend
+                )?.let { WeMessageApi.getMsgInfoInstanceByMsgId(it) }
+            }
+
+            if (instance != null) {
+                WeLogger.i(
+                    TAG,
+                    "msg info normalized from db (original id=${msgInfo.id}, svrId=${msgInfo.serverId})"
+                )
+                MessageInfo(instance)
+            } else {
+                msgInfo
+            }
+        }.onFailure {
+            WeLogger.e(TAG, "normalizeMsgInfo failed", it)
+        }.getOrDefault(msgInfo)
+    }
+
+    @Suppress("DEPRECATION")
+    private fun convertToSegment(msgInfo: MessageInfo): MessageSegment? {
+        return when (msgInfo.type) {
+            MessageType.TEXT -> MessageSegment(
+                type = ScheduleMessageType.TEXT,
+                content = msgInfo.actualContent
+            )
+            MessageType.QUOTE -> MessageSegment(
+                type = ScheduleMessageType.TEXT,
+                content = msgInfo.quoteMsgActualContent ?: msgInfo.actualContent
+            )
+            MessageType.IMAGE -> {
+                // 复读式创建: 仅解析本地已落地的图片文件 (不触发 CDN 下载, 创建瞬时完成);
+                // 本地没有则记为引用段, 发送时走与转发相同的通道现场解析
+                val sourcePath = WeMessageApi.resolveExistingImageByPath(msgInfo.imagePath.orEmpty())
+                if (sourcePath != null) {
+                    val cached = copyMediaToCache(sourcePath) ?: return null
+                    MessageSegment(type = ScheduleMessageType.IMAGE, filePath = cached)
+                } else {
+                    val svrId = msgInfo.serverId.takeIf { it > 0 }
+                        ?: WeMessageApi.getMsgSvrIdByMsgId(msgInfo.id)
+                    if (svrId == null && msgInfo.id <= 0) {
+                        WeLogger.w(TAG, "image has no resolvable reference (imgPath=${msgInfo.imagePath})")
+                        return null
+                    }
+                    WeLogger.i(TAG, "image recorded as reference segment (msgId=${msgInfo.id}, svrId=$svrId)")
+                    MessageSegment(
+                        type = ScheduleMessageType.IMAGE,
+                        filePath = "",
+                        srcTalker = msgInfo.talker,
+                        srcMsgId = msgInfo.id,
+                        srcSvrId = svrId ?: 0
+                    )
+                }
+            }
+            MessageType.VOICE -> {
+                // 语音未落地时记为引用段 (发送时现场解析本地 silk 文件)
+                val voicePath = msgInfo.imagePath?.let { WeMessageApi.getVoiceFullPath(it) }
+                if (voicePath != null && java.io.File(voicePath).exists()) {
+                    val cached = copyMediaToCache(voicePath) ?: return null
+                    MessageSegment(
+                        type = ScheduleMessageType.VOICE,
+                        filePath = cached,
+                        duration = AudioUtils.getDurationMs(voicePath).toInt()
+                    )
+                } else {
+                    WeLogger.i(TAG, "voice recorded as reference segment (msgId=${msgInfo.id})")
+                    MessageSegment(
+                        type = ScheduleMessageType.VOICE,
+                        filePath = "",
+                        srcTalker = msgInfo.talker,
+                        srcMsgId = msgInfo.id,
+                        srcSvrId = msgInfo.serverId.takeIf { it > 0 } ?: 0
+                    )
+                }
+            }
+            MessageType.VIDEO, MessageType.MICRO_VIDEO -> {
+                // 视频未落地时记为引用段 (发送时现场解析本地 mp4)
+                val videoPath = runCatching { WeServiceApi.getVideoMp4PathFromMsgInfo(msgInfo) }.getOrNull()
+                if (!videoPath.isNullOrBlank() && java.io.File(videoPath).exists()) {
+                    val cached = copyMediaToCache(videoPath) ?: return null
+                    MessageSegment(type = ScheduleMessageType.VIDEO, filePath = cached)
+                } else {
+                    WeLogger.i(TAG, "video recorded as reference segment (msgId=${msgInfo.id})")
+                    MessageSegment(
+                        type = ScheduleMessageType.VIDEO,
+                        filePath = "",
+                        srcTalker = msgInfo.talker,
+                        srcMsgId = msgInfo.id,
+                        srcSvrId = msgInfo.serverId.takeIf { it > 0 } ?: 0
+                    )
+                }
+            }
+            MessageType.FILE -> {
+                // 复读式创建: 仅瞬时查本地缓存, 未缓存则记引用段 (发送时现场触发下载)
+                val localPath = WeMessageApi.resolveExistingFilePath(msgInfo.instance)
+                if (localPath != null) {
+                    val cached = copyMediaToCache(localPath) ?: return null
+                    MessageSegment(type = ScheduleMessageType.FILE, filePath = cached)
+                } else {
+                    val svrId = msgInfo.serverId.takeIf { it > 0 }
+                        ?: WeMessageApi.getMsgSvrIdByMsgId(msgInfo.id)
+                    if (svrId == null && msgInfo.id <= 0) {
+                        WeLogger.w(TAG, "file has no resolvable reference (msgId=${msgInfo.id})")
+                        return null
+                    }
+                    WeLogger.i(TAG, "file recorded as reference segment (msgId=${msgInfo.id}, svrId=$svrId)")
+                    MessageSegment(
+                        type = ScheduleMessageType.FILE,
+                        filePath = "",
+                        srcTalker = msgInfo.talker,
+                        srcMsgId = msgInfo.id,
+                        srcSvrId = svrId ?: 0
+                    )
+                }
+            }
+            else -> null
+        }
+    }
+
+    /** 把媒体文件复制到 KnownPaths.moduleCache，返回缓存后的绝对路径 */
+    private fun copyMediaToCache(sourcePath: String): String? {
+        return runCatching {
+            val source = java.io.File(sourcePath)
+            if (!source.exists() || !source.isFile) return null
+
+            val dest = KnownPaths.moduleCache
+                .resolve("sched_${System.currentTimeMillis()}_${source.name}")
+            Files.copy(source.toPath(), dest, StandardCopyOption.REPLACE_EXISTING)
+
+            WeLogger.i(TAG, "media file cached: ${dest.absolutePathString()}")
+            dest.absolutePathString()
+        }.onFailure {
+            WeLogger.e(TAG, "copyMediaToCache failed for $sourcePath", it)
+        }.getOrNull()
+    }
+
+    @OptIn(ExperimentalMaterial3Api::class)
+    @Composable
+    private fun ScheduleConfirmDialogContent(
+        talker: String,
+        talkerName: String,
+        segments: List<MessageSegment>,
+        onDismiss: () -> Unit
+    ) {
+        var subject by remember { mutableStateOf("") }
+        val timePickerState = rememberTimePickerState(
+            initialHour = 10,
+            initialMinute = 0,
+            is24Hour = true
+        )
+        var repeatDaily by remember { mutableStateOf(true) }
+
+        val context = LocalContext.current
+
+        // 发送对象可变：默认来自长按消息所在会话，可改选任意联系人/群
+        var targetTalker by remember { mutableStateOf(talker) }
+        var targetTalkerName by remember { mutableStateOf(talkerName) }
+
+        // 内容段可变：初始来自选中消息，可继续从收藏添加
+        val currentSegments = remember { mutableStateListOf<MessageSegment>().apply { addAll(segments) } }
+
+        AlertDialogContent(
+            title = { Text("定时发送") },
+            text = {
+                DefaultColumn(scrollable = true) {
+                    OutlinedTextField(
+                        value = subject,
+                        onValueChange = { subject = it },
+                        label = { Text("主题（必填）") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true
+                    )
+
+                    Spacer(Modifier.height(8.dp))
+                    Text("发送对象", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                    ListItem(
+                        modifier = Modifier.clickable {
+                            openContactPicker(context, targetTalker) { wxId, name ->
+                                targetTalker = wxId
+                                targetTalkerName = name
+                            }
+                        },
+                        headlineContent = {
+                            Text(
+                                if (targetTalkerName.isNotBlank()) targetTalkerName else targetTalker,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        },
+                        supportingContent = { Text("$targetTalker  ·  点击更换联系人/群") }
+                    )
+
+                    Spacer(Modifier.height(8.dp))
+                    Text("发送时间", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                    TimePicker(state = timePickerState)
+
+                    ListItem(
+                        modifier = Modifier.clickable { repeatDaily = !repeatDaily },
+                        trailingContent = { Switch(checked = repeatDaily, onCheckedChange = null) },
+                        headlineContent = { Text("每天重复") },
+                        supportingContent = { Text(if (repeatDaily) "每天同一时间发送" else "仅发送一次") }
+                    )
+
+                    Spacer(Modifier.height(8.dp))
+                    Text("发送内容", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                    ListItem(
+                        modifier = Modifier.clickable {
+                            openFavoritePicker(context) { seg -> currentSegments.add(seg) }
+                        },
+                        headlineContent = {
+                            Text("从收藏添加内容", color = MaterialTheme.colorScheme.primary)
+                        },
+                        supportingContent = { Text("点击选择收藏的消息，追加到本任务") }
+                    )
+                    ListItem(
+                        headlineContent = { Text("内容摘要") },
+                        supportingContent = { Text(segmentsSummary(currentSegments)) }
+                    )
+                }
+            },
+            dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+            confirmButton = {
+                Button(onClick = {
+                    if (subject.isBlank()) {
+                        showToast("请输入主题")
+                        return@Button
+                    }
+
+                    val schedule = ScheduleConfig(
+                        id = "${System.currentTimeMillis()}",
+                        talker = targetTalker,
+                        talkerName = targetTalkerName,
+                        subject = subject.trim(),
+                        hour = timePickerState.hour,
+                        minute = timePickerState.minute,
+                        repeatDaily = repeatDaily,
+                        // 关闭"每天重复"即为一次性任务：发送一次后自动停用，避免残留
+                        oneTimeOnly = !repeatDaily,
+                        enabled = true,
+                        segments = currentSegments.toList()
+                    )
+
+                    ScheduledMessage.addSchedule(schedule)
+                    showToast("定时任务已添加")
+                    onDismiss()
+                }) { Text("确认") }
+            }
+        )
+    }
+
+    // ------------------------------------------------------------------
+    // 功能点二: 取消定时发送弹窗（仅单选消息）
+    // ------------------------------------------------------------------
+
+    private fun showCancelSchedulesDialog(view: View, msgInfo: MessageInfo) {
+        val talker = msgInfo.talker
+        val talkerSchedules = ScheduledMessage.getSchedulesFor(talker)
+
+        showComposeDialog(view.context) {
+            var selectedIds by remember { mutableStateOf(setOf<String>()) }
+
+            AlertDialogContent(
+                title = { Text("取消定时发送") },
+                text = {
+                    DefaultColumn(scrollable = true) {
+                        if (talkerSchedules.isEmpty()) {
+                            Text(
+                                "当前会话暂无定时发送任务",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(vertical = 16.dp)
+                            )
+                        } else {
+                            talkerSchedules.forEach { schedule ->
+                                val checked = schedule.id in selectedIds
+                                ListItem(
+                                    modifier = Modifier.clickable {
+                                        selectedIds = if (checked) selectedIds - schedule.id
+                                        else selectedIds + schedule.id
+                                    },
+                                    leadingContent = {
+                                        Checkbox(
+                                            checked = checked,
+                                            onCheckedChange = null
+                                        )
+                                    },
+                                    headlineContent = { Text(schedule.subject.ifBlank { "(无主题)" }) },
+                                    supportingContent = {
+                                        Text(
+                                            "${schedule.hour.toString().padStart(2, '0')}:" +
+                                                    "${schedule.minute.toString().padStart(2, '0')} " +
+                                                    "${if (schedule.repeatDaily) "每天" else "单次"} · " +
+                                                    scheduleSummary(schedule)
+                                        )
+                                    }
+                                )
+                            }
+                        }
+                    }
+                },
+                dismissButton = { TextButton(onClick = onDismiss) { Text("关闭") } },
+                confirmButton = {
+                    if (talkerSchedules.isNotEmpty()) {
+                        Button(onClick = {
+                            if (selectedIds.isEmpty()) {
+                                showToast("请先勾选要取消的任务")
+                                return@Button
+                            }
+
+                            val count = selectedIds.size
+                            talkerSchedules.filter { it.id in selectedIds }
+                                .forEach { ScheduledMessage.deleteSchedule(it) }
+                            showToast("已取消 $count 个定时任务")
+                            onDismiss()
+                        }) { Text("取消所选") }
+                    }
+                }
+            )
+        }
+    }
+
+    // ------------------------------------------------------------------
+
+    private fun segmentsSummary(segments: List<MessageSegment>): String {
+        if (segments.isEmpty()) return "空任务"
+        val typesStr = segments.joinToString("+") { it.type.description }
+        return "${segments.size}段消息: $typesStr"
+    }
+
+    /** 兼容旧数据（单段 legacy 字段）的任务摘要 */
+    private fun scheduleSummary(schedule: ScheduleConfig): String {
+        return if (schedule.segments.isNotEmpty()) {
+            segmentsSummary(schedule.segments)
+        } else {
+            schedule.messageType.description
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // 新功能: 发送对象选择（联系人/群）
+    // ------------------------------------------------------------------
+
+    /**
+     * 打开全屏联系人选择器，选一个联系人/群作为定时任务发送对象。
+     * 在独立窗口展示，避免与「定时发送」确认弹窗叠层导致尺寸/焦点异常。
+     */
+    private fun openContactPicker(context: android.content.Context, initialWxId: String, onSelected: (String, String) -> Unit) {
+        showComposeDialog(context, fullScreen = true) {
+            ContactPickerContent(
+                initialWxId = initialWxId,
+                onDismiss = onDismiss,
+                onSelected = onSelected
+            )
+        }
+    }
+
+    @Composable
+    private fun ContactPickerContent(
+        initialWxId: String,
+        onDismiss: () -> Unit,
+        onSelected: (String, String) -> Unit
+    ) {
+        var contacts by remember { mutableStateOf<List<IWeContact>>(emptyList()) }
+        LaunchedEffect(Unit) {
+            withContext(Dispatchers.IO) {
+                if (WeDatabaseApi.isReady) {
+                    val list: List<IWeContact> = runCatching {
+                        WeDatabaseApi.getFriends() + WeDatabaseApi.getGroups() +
+                            WeDatabaseApi.getOfficialAccounts()
+                    }.getOrDefault(emptyList())
+                    withContext(Dispatchers.Main) { contacts = list }
+                }
+            }
+        }
+        SingleContactSelector(
+            title = "选择发送对象（联系人/群）",
+            contacts = contacts,
+            initialSelectedWxId = initialWxId.takeIf { it.isNotBlank() },
+            onDismiss = onDismiss,
+            onConfirm = { wxId ->
+                val name = runCatching { WeDatabaseApi.getDisplayName(wxId) }.getOrDefault("")
+                    .takeIf { it.isNotBlank() && it != wxId }
+                    ?: contacts.firstOrNull { it.wxId == wxId }?.nickname?.takeIf { it.isNotBlank() }
+                    ?: wxId
+                onSelected(wxId, name)
+            }
+        )
+    }
+
+    // ------------------------------------------------------------------
+    // 新功能: 从收藏添加内容
+    // ------------------------------------------------------------------
+
+    private fun openFavoritePicker(context: android.content.Context, onSelected: (MessageSegment) -> Unit) {
+        showComposeDialog(context, fullScreen = true) {
+            FavoritePickerContent(onDismiss = onDismiss, onSelected = onSelected)
+        }
+    }
+
+    @Composable
+    private fun FavoritePickerContent(
+        onDismiss: () -> Unit,
+        onSelected: (MessageSegment) -> Unit
+    ) {
+        var items by remember { mutableStateOf<List<FavoriteEntry>>(emptyList()) }
+        LaunchedEffect(Unit) {
+            withContext(Dispatchers.IO) {
+                val list = FavoriteContentApi.loadFavorites()
+                withContext(Dispatchers.Main) { items = list }
+            }
+        }
+        AlertDialogContent(
+            title = { Text("从收藏添加") },
+            text = {
+                DefaultColumn(scrollable = true) {
+                    if (items.isEmpty()) {
+                        Text(
+                            "暂无可添加的收藏，或收藏数据尚未就绪",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(vertical = 16.dp)
+                        )
+                    } else {
+                        items.forEach { entry ->
+                            ListItem(
+                                modifier = Modifier.clickable {
+                                    val seg = when (entry.type) {
+                                        FavoriteEntry.Type.TEXT -> MessageSegment(
+                                            type = ScheduleMessageType.TEXT,
+                                            content = entry.preview
+                                        )
+                                        FavoriteEntry.Type.IMAGE -> MessageSegment(
+                                            type = ScheduleMessageType.IMAGE,
+                                            filePath = entry.filePath
+                                        )
+                                        FavoriteEntry.Type.VOICE -> MessageSegment(
+                                            type = ScheduleMessageType.VOICE,
+                                            filePath = entry.filePath,
+                                            duration = entry.duration
+                                        )
+                                        FavoriteEntry.Type.VIDEO -> MessageSegment(
+                                            type = ScheduleMessageType.VIDEO,
+                                            filePath = entry.filePath
+                                        )
+                                        FavoriteEntry.Type.FILE -> MessageSegment(
+                                            type = ScheduleMessageType.FILE,
+                                            filePath = entry.filePath
+                                        )
+                                        else -> MessageSegment(
+                                            type = ScheduleMessageType.TEXT,
+                                            content = entry.preview
+                                        )
+                                    }
+                                    onSelected(seg)
+                                },
+                                headlineContent = { Text(entry.preview.ifBlank { "(空收藏)" }, maxLines = 2) },
+                                supportingContent = { Text(entry.type.label) }
+                            )
+                        }
+                    }
+                }
+            },
+            dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } }
+        )
+    }
+}

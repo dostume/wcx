@@ -24,6 +24,42 @@ object WeLogger {
 
     private const val TAG = BuildConfig.TAG
 
+    // ========== 全局日志开关（设置页"关闭所有日志"） ==========
+
+    /** 文件系统上的开关标记：MMKV 尚未就绪的极早期（加载阶段）用得上 */
+    private const val DISABLE_FLAG_FILE = "logs_disabled.flag"
+
+    /**
+     * 关闭后：不输出 logcat（全部等级）、不写模块日志文件（moduleData/logs）。
+     * 每次直接读 MMKV（mmap 共享内存，跨进程即时可见），不做进程内缓存。
+     * MMKV 尚未初始化的极早期调用回退到 moduleData 下的标记文件。任何失败都不抛异常影响宿主。
+     */
+    private fun isDisabled(): Boolean {
+        runCatching {
+            return com.Johnny.wcx.preferences.WePrefs.default
+                .getBoolean(com.Johnny.wcx.constants.Preferences.DISABLE_ALL_LOGS, false)
+        }
+        return runCatching {
+            Files.exists(KnownPaths.moduleData / DISABLE_FLAG_FILE)
+        }.getOrDefault(false)
+    }
+
+    /** 设置页切换「关闭所有日志」时同步写/删文件系统标记，覆盖 MMKV 就绪前的早期日志。 */
+    fun setLogsDisabledFlag(disabled: Boolean) {
+        runCatching {
+            val flag = (KnownPaths.moduleData / DISABLE_FLAG_FILE).toFile()
+            if (disabled) {
+                flag.parentFile?.mkdirs()
+                flag.createNewFile()
+            } else {
+                flag.delete()
+            }
+        }
+    }
+
+    /** 供崩溃日志文件等旁路通道查询开关状态 */
+    fun isAllLogsDisabled(): Boolean = isDisabled()
+
     private const val CHUNK_SIZE = 4000
     // A single verbose packet/database dump must not enqueue hundreds of thousands of chars.
     private const val MAX_CHUNKS = 16
@@ -379,26 +415,31 @@ object WeLogger {
     // ========== Tag + String ==========
 
     fun e(tag: String?, msg: String) {
+        if (isDisabled()) return
         Log.e(TAG, "$tag: $msg")
         enqueue(WriteTask.Record("E", tag, msg, null, LocalDateTime.now()))
     }
 
     fun w(tag: String?, msg: String) {
+        if (isDisabled()) return
         Log.w(TAG, "$tag: $msg")
         enqueue(WriteTask.Record("W", tag, msg, null, LocalDateTime.now()))
     }
 
     fun i(tag: String?, msg: String) {
+        if (isDisabled()) return
         Log.i(TAG, "$tag: $msg")
         enqueue(WriteTask.Record("I", tag, msg, null, LocalDateTime.now()))
     }
 
     fun d(tag: String?, msg: String) {
+        if (isDisabled()) return
         Log.d(TAG, "$tag: $msg")
         enqueue(WriteTask.Record("D", tag, msg, null, LocalDateTime.now()))
     }
 
     fun v(tag: String?, msg: String) {
+        if (isDisabled()) return
         Log.v(TAG, "$tag: $msg")
         enqueue(WriteTask.Record("V", tag, msg, null, LocalDateTime.now()))
     }
@@ -406,26 +447,31 @@ object WeLogger {
     // ========== Tag + String + Throwable ==========
 
     fun e(tag: String?, msg: String, e: Throwable) {
+        if (isDisabled()) return
         Log.e(TAG, "$tag: $msg", e)
         enqueue(WriteTask.Record("E", tag, msg, e, LocalDateTime.now()))
     }
 
     fun w(tag: String?, msg: String, e: Throwable) {
+        if (isDisabled()) return
         Log.w(TAG, "$tag: $msg", e)
         enqueue(WriteTask.Record("W", tag, msg, e, LocalDateTime.now()))
     }
 
     fun i(tag: String?, msg: String, e: Throwable) {
+        if (isDisabled()) return
         Log.i(TAG, "$tag: $msg", e)
         enqueue(WriteTask.Record("I", tag, msg, e, LocalDateTime.now()))
     }
 
     fun d(tag: String?, msg: String, e: Throwable) {
+        if (isDisabled()) return
         Log.d(TAG, "$tag: $msg", e)
         enqueue(WriteTask.Record("D", tag, msg, e, LocalDateTime.now()))
     }
 
     fun v(tag: String?, msg: String, e: Throwable) {
+        if (isDisabled()) return
         Log.v(TAG, "$tag: $msg", e)
         enqueue(WriteTask.Record("V", tag, msg, e, LocalDateTime.now()))
     }

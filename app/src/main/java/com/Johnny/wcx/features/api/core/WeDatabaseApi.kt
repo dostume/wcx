@@ -72,7 +72,13 @@ object WeDatabaseApi : ApiFeature(), IResolveDex {
 
     lateinit var db: SQLiteDatabase
 
+    /** 微信收藏库（enFavorite.db）的连接，由 openDatabase hook 捕获；未就绪为 null。 */
+    @Volatile
+    var favoriteDb: SQLiteDatabase? = null
+
     val isReady: Boolean get() = ::db.isInitialized
+
+    val isFavoriteReady: Boolean get() = favoriteDb != null
 
     // ==== 供 h.Hchat 脚本子系统兜底使用 ====
     // Hchat 侧在微信 8.0.79 上 resolveDatabaseApi() 解析不到 CoreStorage / SqliteDB wrapper，
@@ -367,22 +373,34 @@ object WeDatabaseApi : ApiFeature(), IResolveDex {
             initializeDatabase(storageObj)
         }
 
-        if (Preferences.verboseLog) {
+        // 收藏库（enFavorite.db）是独立数据库，主库 db 里没有 FavItemInfo 表。
+        // 这里在微信打开库时按库名捕获其连接，供「定时发送 → 从收藏添加」读取收藏列表。
+        runCatching {
             SQLiteDatabase::class.reflekt().firstMethod {
                 name = "openDatabase"
                 parameters(BString, ByteArray::class, SQLiteCipherSpec::class, SQLiteDatabase.CursorFactory::class, int, DatabaseErrorHandler::class, int)
-            }.hookBefore {
-                val cipherSpec = args[2] as SQLiteCipherSpec?
-                WeLogger.d(
-                    TAG,
-                    "openDatabase() called with: name=${args[0] as String?}, password=${String(args[1] as? ByteArray? ?: return@hookBefore)}, cipherSpec=${
-                        cipherSpec.run {
-                            "${this?.hmacAlgorithm},${this?.hmacEnabled},${this?.kdfAlgorithm},${this?.kdfIteration},${this?.pageSize}"
-                        }
-                    }"
-                )
+            }.let { m ->
+                m.hookAfter {
+                    val name = args[0]?.toString().orEmpty()
+                    if (name.contains("enFavorite", ignoreCase = true)) {
+                        (result as? SQLiteDatabase)?.let { favoriteDb = it }
+                    }
+                }
+                if (Preferences.verboseLog) {
+                    m.hookBefore {
+                        val cipherSpec = args[2] as SQLiteCipherSpec?
+                        WeLogger.d(
+                            TAG,
+                            "openDatabase() called with: name=${args[0] as String?}, password=${String(args[1] as? ByteArray? ?: return@hookBefore)}, cipherSpec=${
+                                cipherSpec.run {
+                                    "${this?.hmacAlgorithm},${this?.hmacEnabled},${this?.kdfAlgorithm},${this?.kdfIteration},${this?.pageSize}"
+                                }
+                            }"
+                        )
+                    }
+                }
             }
-        }
+        }.onFailure { WeLogger.e(TAG, "hook openDatabase 失败", it) }
     }
 
     @Synchronized

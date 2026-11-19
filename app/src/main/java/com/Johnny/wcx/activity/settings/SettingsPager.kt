@@ -233,6 +233,13 @@ fun SettingsPager(
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 PrefSwitch(
+                    key = Preferences.DISABLE_ALL_LOGS,
+                    title = "关闭所有日志",
+                    summary = "开启后不输出、不记录任何模块日志 (logcat 与日志文件), 可减少性能开销与隐私暴露",
+                    icon = MaterialSymbols.Outlined.Frame_bug,
+                    onChanged = { com.Johnny.wcx.utils.WeLogger.setLogsDisabledFlag(it) },
+                )
+                PrefSwitch(
                     key = Preferences.VERBOSE_LOG,
                     title = "详细日志",
                     summary = "输出高频日志 (这可能会暴露你的隐私信息）",
@@ -674,6 +681,7 @@ private fun PrefSwitch(
     title: String,
     summary: String,
     icon: ImageVector,
+    onChanged: ((Boolean) -> Unit)? = null,
 ) {
     var checked by remember { mutableStateOf(WePrefs.getBoolOrFalse(key)) }
     SwitchPreference(
@@ -684,6 +692,7 @@ private fun PrefSwitch(
         onCheckedChange = {
             checked = it
             WePrefs.putBool(key, it)
+            onChanged?.invoke(it)
         },
     )
 }

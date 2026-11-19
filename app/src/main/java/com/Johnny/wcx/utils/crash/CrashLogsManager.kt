@@ -41,6 +41,8 @@ object CrashLogsManager {
     }
 
     fun saveCrashLog(crashInfo: String, isJavaCrash: Boolean = false): String? {
+        // 设置页"关闭所有日志"开启时不落盘崩溃日志文件
+        if (WeLogger.isAllLogsDisabled()) return null
         return try {
             ensureCrashLogDirExists()
 
