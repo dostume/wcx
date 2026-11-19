@@ -350,11 +350,10 @@ object ScheduledMessageMenu : SwitchFeature(),
         onDismiss: () -> Unit
     ) {
         // 与模块端「添加定时任务」共用同一个编辑器组件, 两个入口功能完全一致:
-        // 发送对象 / 消息段列表 / 添加消息段 / 从收藏添加 / 发送时间 / 每天重复 / 启用。
+        // 发送对象(可多选) / 消息段列表 / 添加消息段 / 从收藏添加 / 发送时间 / 每天重复 / 启用。
         ScheduleTaskEditor(
             title = "定时发送",
-            initialTalker = talker,
-            initialTalkerName = talkerName,
+            initialTargets = listOf(ScheduleTarget(talker, talkerName)),
             initialSegments = segments,
             initialHour = 10,
             initialMinute = 0,
@@ -367,7 +366,7 @@ object ScheduledMessageMenu : SwitchFeature(),
                     showToast("请输入主题")
                     return@ScheduleTaskEditor
                 }
-                if (draft.talker.isBlank()) {
+                if (draft.targets.isEmpty() || draft.talker.isBlank()) {
                     showToast("请选择发送对象")
                     return@ScheduleTaskEditor
                 }
@@ -379,6 +378,8 @@ object ScheduledMessageMenu : SwitchFeature(),
                     id = "${System.currentTimeMillis()}",
                     talker = draft.talker,
                     talkerName = draft.talkerName,
+                    extraTalkers = draft.extraTalkers,
+                    extraTalkerNames = draft.extraTalkerNames,
                     subject = draft.subject.trim(),
                     hour = draft.hour,
                     minute = draft.minute,
@@ -477,8 +478,4 @@ object ScheduledMessageMenu : SwitchFeature(),
             schedule.messageType.description
         }
     }
-    /**
-     * 打开全屏联系人选择器，选一个联系人/群作为定时任务发送对象。
-     * 在独立窗口展示，避免与「定时发送」确认弹窗叠层导致尺寸/焦点异常。
-     */
 }

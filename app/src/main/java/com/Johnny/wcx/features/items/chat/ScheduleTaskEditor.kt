@@ -39,7 +39,7 @@ import com.Johnny.wcx.features.items.chat.ScheduledMessage.MessageType
 import com.Johnny.wcx.ui.content.AlertDialogContent
 import com.Johnny.wcx.ui.content.Button
 import com.Johnny.wcx.ui.content.DefaultColumn
-import com.Johnny.wcx.ui.content.SingleContactSelector
+import com.Johnny.wcx.ui.content.ContactsSelector
 import com.Johnny.wcx.ui.content.TextButton
 import com.Johnny.wcx.ui.utils.showComposeDialog
 import com.Johnny.wcx.utils.HostInfo
@@ -52,6 +52,16 @@ import java.nio.file.StandardCopyOption
 import kotlin.io.path.absolutePathString
 
 /**
+ * 定时任务的发送对象（联系人/群）。
+ *
+ * 定时发送支持**多选**接收方, 因此这里用列表承载, 而不是单个 wxId 字符串。
+ */
+data class ScheduleTarget(
+    val wxId: String,
+    val name: String
+)
+
+/**
  * 定时任务编辑结果（共享编辑器的输出）。
  *
  * 由 [ScheduleTaskEditor] 产出，两个入口（模块功能列表 / 消息长按菜单）都消费它，
@@ -59,21 +69,28 @@ import kotlin.io.path.absolutePathString
  */
 data class ScheduleTaskDraft(
     val subject: String = "",
-    val talker: String = "",
-    val talkerName: String = "",
+    val targets: List<ScheduleTarget> = emptyList(),
     val segments: List<MessageSegment> = emptyList(),
     val hour: Int = 9,
     val minute: Int = 0,
     val repeatDaily: Boolean = true,
     val enabled: Boolean = true
-)
+) {
+    /** 首个发送对象（兼容旧的单 talker 字段） */
+    val talker: String get() = targets.firstOrNull()?.wxId.orEmpty()
+    val talkerName: String get() = targets.firstOrNull()?.name.orEmpty()
+
+    /** 除首个之外额外勾选的发送对象 */
+    val extraTalkers: List<String> get() = targets.drop(1).map { it.wxId }
+    val extraTalkerNames: List<String> get() = targets.drop(1).map { it.name }
+}
 
 /**
  * 共用的定时任务编辑器。
  *
  * 模块端（功能列表 → 添加定时任务）与长按端（消息长按 → 定时发送）**共用这一套 UI**，
  * 保证两个入口的功能完全一致：
- *  - 发送对象（联系人/群，可搜索）
+ *  - 发送对象（联系人/群，可搜索、**可多选**）
  *  - 消息段列表（逐段显示、可删除）
  *  - 「+ 添加消息段」（文本/链接/图片/语音/视频/文件）
  *  - 「从收藏添加内容」（收藏多选，确定后追加到任务；图片/语音/视频/文件按微信原生类型发送）
@@ -84,8 +101,7 @@ data class ScheduleTaskDraft(
 @Composable
 internal fun ScheduleTaskEditor(
     title: String,
-    initialTalker: String = "",
-    initialTalkerName: String = "",
+    initialTargets: List<ScheduleTarget> = emptyList(),
     initialSegments: List<MessageSegment> = emptyList(),
     initialHour: Int = 9,
     initialMinute: Int = 0,
@@ -96,8 +112,9 @@ internal fun ScheduleTaskEditor(
     onConfirm: (ScheduleTaskDraft) -> Unit
 ) {
     var subject by remember { mutableStateOf("") }
-    var talker by remember { mutableStateOf(initialTalker) }
-    var talkerName by remember { mutableStateOf(initialTalkerName) }
+    val targets = remember {
+        mutableStateListOf<ScheduleTarget>().apply { addAll(initialTargets) }
+    }
     val segments = remember {
         mutableStateListOf<MessageSegment>().apply { addAll(initialSegments) }
     }
@@ -136,18 +153,50 @@ internal fun ScheduleTaskEditor(
                 // ── 发送对象 ──
                 ListItem(
                     modifier = Modifier.clickable {
-                        openContactPicker(context, talker) { wxId, name ->
-                            talker = wxId
-                            talkerName = name
+                        openContactPicker(context, targets.map { it.wxId }.toSet()) { picked ->
+                            targets.clear()
+                            targets.addAll(picked)
                         }
                     },
                     headlineContent = {
-                        Text(if (talkerName.isNotBlank()) talkerName else "选择发送对象")
+                        Text(
+                            when {
+                                targets.isEmpty() -> "选择发送对象"
+                                targets.size == 1 -> targets.first().name
+                                else -> "已选 ${targets.size} 个发送对象"
+                            }
+                        )
                     },
                     supportingContent = {
-                        Text(if (talker.isNotBlank()) talker else "点击选择联系人/群")
+                        Text(
+                            when {
+                                targets.isEmpty() -> "点击选择联系人/群（可多选）"
+                                targets.size == 1 -> targets.first().wxId
+                                else -> targets.joinToString("、") { it.name }
+                            },
+                            maxLines = 2
+                        )
+                    },
+                    trailingContent = {
+                        Text(
+                            "可多选",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     }
                 )
+
+                if (targets.isNotEmpty()) {
+                    targets.forEachIndexed { index, target ->
+                        ListItem(
+                            headlineContent = { Text(target.name) },
+                            supportingContent = { Text(target.wxId) },
+                            trailingContent = {
+                                TextButton(onClick = { targets.removeAt(index) }) { Text("删除") }
+                            }
+                        )
+                    }
+                }
 
                 Spacer(modifier = Modifier.height(8.dp))
                 Text("消息段列表", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
@@ -219,8 +268,7 @@ internal fun ScheduleTaskEditor(
                 onConfirm(
                     ScheduleTaskDraft(
                         subject = subject.trim(),
-                        talker = talker,
-                        talkerName = talkerName,
+                        targets = targets.toList(),
                         segments = segments.toList(),
                         hour = h,
                         minute = m,
@@ -364,26 +412,37 @@ internal fun ScheduleTaskEditor(
 
 // ─────────────────────────────── 联系人选择 ───────────────────────────────
 
-/** 打开联系人/群选择器（单选）。 */
+/**
+ * 打开联系人/群选择器（**多选**）。
+ *
+ * 定时发送可以同时发给多个对象, 因此这里用复选框多选, 并在确认后把整份选择结果回传。
+ *
+ * 注意: 确认后必须主动关闭这个弹窗 —— 之前只回传结果不关闭, 用户看到的就是
+ * 「按了确定没反应」(选择其实已经生效, 但选择器一直盖在编辑器上面)。
+ */
 internal fun openContactPicker(
     context: android.content.Context,
-    initialWxId: String,
-    onSelected: (String, String) -> Unit
+    initialWxIds: Set<String>,
+    onSelected: (List<ScheduleTarget>) -> Unit
 ) {
     showComposeDialog(context, fullScreen = true) {
+        val dismissPicker = onDismiss
         ContactPickerContent(
-            initialWxId = initialWxId,
-            onDismiss = onDismiss,
-            onSelected = onSelected
+            initialWxIds = initialWxIds,
+            onDismiss = { dismissPicker() },
+            onSelected = { picked ->
+                onSelected(picked)
+                dismissPicker()
+            }
         )
     }
 }
 
 @Composable
 private fun ContactPickerContent(
-    initialWxId: String,
+    initialWxIds: Set<String>,
     onDismiss: () -> Unit,
-    onSelected: (String, String) -> Unit
+    onSelected: (List<ScheduleTarget>) -> Unit
 ) {
     var contacts by remember { mutableStateOf<List<IWeContact>>(emptyList()) }
     LaunchedEffect(Unit) {
@@ -395,19 +454,37 @@ private fun ContactPickerContent(
             withContext(Dispatchers.Main) { contacts = list }
         }
     }
-    SingleContactSelector(
+    ContactsSelector(
         title = "选择发送对象（联系人/群）",
         contacts = contacts,
-        initialSelectedWxId = initialWxId.takeIf { it.isNotBlank() },
+        initialSelectedWxIds = initialWxIds,
         onDismiss = onDismiss,
-        onConfirm = { wxId ->
-            val name = runCatching { WeDatabaseApi.getDisplayName(wxId) }.getOrDefault("")
-                .takeIf { it.isNotBlank() && it != wxId }
-                ?: contacts.firstOrNull { it.wxId == wxId }?.nickname?.takeIf { it.isNotBlank() }
-                ?: wxId
-            onSelected(wxId, name)
-        }
+        onConfirm = { wxIds ->
+            // 保持用户勾选的先后顺序: 回传的是 Set, 这里按选择器里的显示顺序排序,
+            // 至少保证与初始选择一致, 避免任务里对象顺序随机跳动。
+            val ordered = wxIds.sortedBy { id ->
+                val index = initialWxIds.toList().indexOf(id)
+                if (index >= 0) index else Int.MAX_VALUE
+            }
+            onSelected(
+                ordered.map { wxId ->
+                    ScheduleTarget(
+                        wxId = wxId,
+                        name = resolveContactName(wxId, contacts)
+                    )
+                }
+            )
+        },
+        showMultiSelectHint = true
     )
+}
+
+/** 解析联系人显示名: 数据库优先, 兜底用列表里的昵称, 最后退回 wxId。 */
+private fun resolveContactName(wxId: String, contacts: List<IWeContact>): String {
+    return runCatching { WeDatabaseApi.getDisplayName(wxId) }.getOrDefault("")
+        .takeIf { it.isNotBlank() && it != wxId }
+        ?: contacts.firstOrNull { it.wxId == wxId }?.nickname?.takeIf { it.isNotBlank() }
+        ?: wxId
 }
 
 // ─────────────────────────────── 收藏选择 ───────────────────────────────

@@ -90,6 +90,8 @@ object ScheduledMessage : ClickableFeature() {
     private const val SEGMENT_RETRY_DELAY_MS = 2_000L
     /** 单次任务迟到重试的间隔 */
     private const val ONETIME_RETRY_DELAY_MS = 30_000L
+    /** 多接收方时, 切换到下一个接收方之间的间隔 (避免连续发送被判为风控) */
+    private const val TARGET_GAP_MS = 800L
     /** 单个任务当天最多尝试次数, 超出则等明天, 防止失败时无限重试 */
     private const val MAX_FIRE_ATTEMPTS = 3
 
@@ -119,6 +121,13 @@ object ScheduledMessage : ClickableFeature() {
         val id: String,
         val talker: String,
         val talkerName: String,
+        /**
+         * 除 [talker] 之外额外勾选的发送对象 (定时发送支持多选)。
+         * 旧任务没有该字段, 反序列化时为空列表, 行为与原来一致。
+         */
+        val extraTalkers: List<String> = emptyList(),
+        /** 与 [extraTalkers] 一一对应的显示名 */
+        val extraTalkerNames: List<String> = emptyList(),
         // 任务主题（消息菜单创建时必填；旧数据无该字段，反序列化时取默认空串）
         val subject: String = "",
         val messageType: MessageType = MessageType.TEXT,
@@ -139,8 +148,25 @@ object ScheduledMessage : ClickableFeature() {
          */
         var lastFiredDate: String = "",
         /** 当天已尝试发送的次数, 成功或跨天时归零; 用于限制失败重试次数 */
-        var fireAttempts: Int = 0
-    ) : java.io.Serializable
+        var fireAttempts: Int = 0,
+        /**
+         * 当天已经成功收到消息的接收方。
+         * 多接收方任务里部分失败需要重试时, 跳过这些已成功的接收方, 避免重复发送。
+         */
+        var sentTargets: List<String> = emptyList()
+    ) : java.io.Serializable {
+        /** 任务的全部发送对象 (第一个是 talker, 其余是额外勾选的) */
+        fun targetTalkers(): List<String> {
+            val all = (listOf(talker) + extraTalkers).filter { it.isNotBlank() }
+            return all.distinct()
+        }
+
+        /** 全部发送对象的显示名 */
+        fun targetNames(): List<String> {
+            val names = (listOf(talkerName) + extraTalkerNames).filter { it.isNotBlank() }
+            return names.ifEmpty { targetTalkers() }
+        }
+    }
 
     enum class MessageType(val description: String) {
         TEXT("文本"),
@@ -504,6 +530,10 @@ object ScheduledMessage : ClickableFeature() {
             }
 
             schedule.fireAttempts += 1
+            // 跨天重置"当天已成功的接收方", 否则昨天的记录会让今天直接跳过发送
+            if (schedule.lastFiredDate != todayKey() && schedule.sentTargets.isNotEmpty()) {
+                schedule.sentTargets = emptyList()
+            }
             val sentOk = runCatching {
                 if (schedule.segments.isNotEmpty()) {
                     sendSegments(schedule)
@@ -517,11 +547,13 @@ object ScheduledMessage : ClickableFeature() {
             if (sentOk) {
                 schedule.lastFiredDate = todayKey()
                 schedule.fireAttempts = 0
-                WeLogger.i(TAG, "scheduled message sent to ${schedule.talker}")
+                WeLogger.i(TAG, "scheduled message sent to ${schedule.targetTalkers()}")
             } else {
                 WeLogger.w(
                     TAG,
-                    "scheduled message to ${schedule.talker} incomplete (attempt ${schedule.fireAttempts}/$MAX_FIRE_ATTEMPTS)"
+                    "scheduled message to ${schedule.targetTalkers()} incomplete " +
+                            "(attempt ${schedule.fireAttempts}/$MAX_FIRE_ATTEMPTS, " +
+                            "sent=${schedule.sentTargets})"
                 )
             }
             advanceAfterTrigger(schedule, sentOk)
@@ -535,17 +567,45 @@ object ScheduledMessage : ClickableFeature() {
      * 原实现把整段循环包在一个 runCatching 里, 第一段(常见于图片/视频)一旦抛异常,
      * 后面的文本段就全都发不出去了 —— 用户看到的就是"整条定时消息没发出来"。
      * 媒体段常常只是文件还没落地/CDN 未就绪, 因此对失败段退避重试一次。
+     *
+     * 定时任务可以勾选多个接收方: 逐个接收方依次发送, 每个接收方内部按消息段顺序发,
+     * 保证"每人先收到第1段、再收到第2段"。当天已成功的接收方会被跳过, 避免重试时重复发送。
      */
     private suspend fun sendSegments(schedule: ScheduleConfig): Boolean {
         var allOk = true
+        val targets = schedule.targetTalkers()
+        if (targets.isEmpty()) {
+            WeLogger.e(TAG, "schedule ${schedule.id} has no target talker")
+            return false
+        }
+        for (target in targets) {
+            if (target in schedule.sentTargets) {
+                WeLogger.i(TAG, "schedule ${schedule.id}: target $target already succeeded today, skipping")
+                continue
+            }
+            val ok = sendSegmentsTo(schedule, target)
+            if (ok) {
+                schedule.sentTargets = (schedule.sentTargets + target).distinct()
+            } else {
+                WeLogger.e(TAG, "schedule ${schedule.id}: target $target failed")
+                allOk = false
+            }
+            delay(TARGET_GAP_MS)
+        }
+        return allOk
+    }
+
+    /** 把全部消息段发给单个接收方; 单段失败退避重试一次。 */
+    private suspend fun sendSegmentsTo(schedule: ScheduleConfig, target: String): Boolean {
+        var allOk = true
         schedule.segments.forEachIndexed { index, segment ->
-            val ok = runCatching { sendSegment(schedule.talker, segment) }
+            val ok = runCatching { sendSegment(target, segment) }
                 .onFailure { WeLogger.e(TAG, "segment $index (${segment.type}) threw", it) }
                 .getOrDefault(false)
             if (!ok) {
                 WeLogger.w(TAG, "segment $index (${segment.type}) failed, retrying once")
                 delay(SEGMENT_RETRY_DELAY_MS)
-                val retried = runCatching { sendSegment(schedule.talker, segment) }
+                val retried = runCatching { sendSegment(target, segment) }
                     .onFailure { WeLogger.e(TAG, "segment $index (${segment.type}) retry threw", it) }
                     .getOrDefault(false)
                 if (!retried) {
@@ -773,16 +833,41 @@ object ScheduledMessage : ClickableFeature() {
     }
 
     /** 老版本创建的单条任务(无 segments) */
-    private fun sendLegacySingle(schedule: ScheduleConfig): Boolean {
+    private suspend fun sendLegacySingle(schedule: ScheduleConfig): Boolean {
+        val targets = schedule.targetTalkers()
+        if (targets.isEmpty()) {
+            WeLogger.e(TAG, "legacy schedule ${schedule.id} has no target talker")
+            return false
+        }
+        var allOk = true
+        for (target in targets) {
+            if (target in schedule.sentTargets) {
+                WeLogger.i(TAG, "legacy schedule ${schedule.id}: target $target already succeeded today, skipping")
+                continue
+            }
+            val ok = sendLegacySingleTo(schedule, target)
+            if (ok) {
+                schedule.sentTargets = (schedule.sentTargets + target).distinct()
+            } else {
+                WeLogger.e(TAG, "legacy schedule ${schedule.id}: target $target failed")
+                allOk = false
+            }
+            delay(TARGET_GAP_MS)
+        }
+        return allOk
+    }
+
+    /** 老版本单条任务对单个接收方的发送 */
+    private fun sendLegacySingleTo(schedule: ScheduleConfig, talker: String): Boolean {
         return when (schedule.messageType) {
-            MessageType.TEXT -> sendTextSafely(schedule.talker, schedule.content)
-            MessageType.LINK -> sendTextSafely(schedule.talker, schedule.content)
+            MessageType.TEXT -> sendTextSafely(talker, schedule.content)
+            MessageType.LINK -> sendTextSafely(talker, schedule.content)
             MessageType.IMAGE -> {
                 if (schedule.filePath.isBlank()) {
                     WeLogger.e(TAG, "legacy image schedule has no file path")
                     return false
                 }
-                runCatching { WeMessageApi.sendImage(schedule.talker, schedule.filePath); true }
+                runCatching { WeMessageApi.sendImage(talker, schedule.filePath); true }
                     .onFailure { WeLogger.e(TAG, "legacy image send failed", it) }
                     .getOrDefault(false)
             }
@@ -791,7 +876,7 @@ object ScheduledMessage : ClickableFeature() {
                     WeLogger.e(TAG, "legacy voice schedule has no file path")
                     return false
                 }
-                runCatching { WeMessageApi.sendVoice(schedule.talker, schedule.filePath, schedule.duration); true }
+                runCatching { WeMessageApi.sendVoice(talker, schedule.filePath, schedule.duration); true }
                     .onFailure { WeLogger.e(TAG, "legacy voice send failed", it) }
                     .getOrDefault(false)
             }
@@ -800,7 +885,7 @@ object ScheduledMessage : ClickableFeature() {
                     WeLogger.e(TAG, "legacy video schedule has no file path")
                     return false
                 }
-                runCatching { WeMessageApi.sendVideo(schedule.talker, schedule.filePath); true }
+                runCatching { WeMessageApi.sendVideo(talker, schedule.filePath); true }
                     .onFailure { WeLogger.e(TAG, "legacy video send failed", it) }
                     .getOrDefault(false)
             }
@@ -810,12 +895,12 @@ object ScheduledMessage : ClickableFeature() {
                     return false
                 }
                 val fileName = schedule.filePath.substringAfterLast('/')
-                runCatching { WeMessageApi.sendFile(schedule.talker, schedule.filePath, fileName); true }
+                runCatching { WeMessageApi.sendFile(talker, schedule.filePath, fileName); true }
                     .onFailure { WeLogger.e(TAG, "legacy file send failed", it) }
                     .getOrDefault(false)
             }
             MessageType.FAVORITE -> sendFavoriteSegment(
-                schedule.talker,
+                talker,
                 MessageSegment(type = MessageType.FAVORITE, content = schedule.content)
             )
         }
@@ -841,11 +926,22 @@ object ScheduledMessage : ClickableFeature() {
     }
 
     fun getSchedulesFor(talker: String): List<ScheduleConfig> {
-        return synchronized(storageLock) { schedules.filter { it.talker == talker } }
+        // 多接收方任务: 只要包含该会话就算命中, 否则"取消定时发送"会漏掉群发任务
+        return synchronized(storageLock) { schedules.filter { talker in it.targetTalkers() } }
     }
 
     private fun updateSchedule(schedule: ScheduleConfig) {
         schedules = schedules.map { if (it.id == schedule.id) schedule else it }
+    }
+
+    /** 任务列表标题: 单个接收方显示名字, 多个显示「A、B 等N个对象」 */
+    private fun scheduleTitle(schedule: ScheduleConfig): String {
+        val names = schedule.targetNames()
+        return when {
+            names.isEmpty() -> "未选择发送对象"
+            names.size == 1 -> names.first()
+            else -> "${names.take(2).joinToString("、")} 等${names.size}个对象"
+        }
     }
 
     fun deleteSchedule(schedule: ScheduleConfig) {
@@ -911,7 +1007,7 @@ object ScheduledMessage : ClickableFeature() {
                                             editingSchedule = schedule
                                             showEditDialog = true
                                         },
-                                        headlineContent = { Text(schedule.talkerName) },
+                                        headlineContent = { Text(scheduleTitle(schedule)) },
                                         supportingContent = {
                                             val summary = if (schedule.segments.isNotEmpty()) {
                                                 segmentsSummary(schedule.segments)
@@ -986,11 +1082,19 @@ object ScheduledMessage : ClickableFeature() {
         }
 
         // 与长按菜单端「定时发送」共用同一个编辑器组件, 两个入口功能完全一致:
-        // 发送对象 / 消息段列表 / 添加消息段 / 从收藏添加 / 发送时间 / 每天重复 / 启用。
+        // 发送对象(可多选) / 消息段列表 / 添加消息段 / 从收藏添加 / 发送时间 / 每天重复 / 启用。
+        val initialTargets = remember {
+            existing?.let {
+                val extras = it.extraTalkers.mapIndexed { index, wxId ->
+                    ScheduleTarget(wxId, it.extraTalkerNames.getOrNull(index).orEmpty())
+                }
+                listOf(ScheduleTarget(it.talker, it.talkerName)) + extras
+            } ?: emptyList()
+        }
+
         ScheduleTaskEditor(
             title = if (isEditing) "编辑定时任务" else "添加定时任务",
-            initialTalker = existing?.talker ?: "",
-            initialTalkerName = existing?.talkerName ?: "",
+            initialTargets = initialTargets,
             initialSegments = initialSegments,
             initialHour = existing?.hour ?: 9,
             initialMinute = existing?.minute ?: 0,
@@ -999,7 +1103,7 @@ object ScheduledMessage : ClickableFeature() {
             subjectRequired = false,
             onDismiss = onDismiss,
             onConfirm = { draft ->
-                if (draft.talker.isBlank()) {
+                if (draft.targets.isEmpty() || draft.talker.isBlank()) {
                     showToast("请选择发送对象")
                     return@ScheduleTaskEditor
                 }
@@ -1024,6 +1128,8 @@ object ScheduledMessage : ClickableFeature() {
                         id = existing?.id ?: "${System.currentTimeMillis()}",
                         talker = draft.talker,
                         talkerName = draft.talkerName,
+                        extraTalkers = draft.extraTalkers,
+                        extraTalkerNames = draft.extraTalkerNames,
                         subject = draft.subject,
                         messageType = existing?.messageType ?: MessageType.TEXT,
                         content = existing?.content ?: "",

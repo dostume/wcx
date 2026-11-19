@@ -159,7 +159,9 @@ fun BaseContactSelector(
     onSelectAll: ((List<IWeContact>) -> Unit)? = null,
     onDeselectAll: ((List<IWeContact>) -> Unit)? = null,
     onInvertSelection: ((List<IWeContact>) -> Unit)? = null,
-    fullScreen: Boolean = true
+    fullScreen: Boolean = true,
+    /** 搜索框下方的提示文案(例如「可多选」说明); 为空则不显示 */
+    hintText: String? = null
 ) {
     val context = LocalContext.current
     val localizedContext = LocalContext.current
@@ -528,6 +530,17 @@ fun BaseContactSelector(
                             contentDescription = if (filtersExpanded) "折叠筛选" else "展开筛选",
                         )
                     }
+                }
+
+                if (!hintText.isNullOrBlank()) {
+                    Text(
+                        text = hintText,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 4.dp, vertical = 2.dp)
+                    )
                 }
 
                 AnimatedVisibility(
@@ -991,6 +1004,16 @@ fun ContactsSelector(
     contacts: List<IWeContact>,
     initialSelectedWxIds: Set<String>,
     onDismiss: () -> Unit,
+    /**
+     * 是否显示"可多选"提示。
+     *
+     * 多选界面只靠复选框不够明显, 用户常以为只能选一个; 打开后在搜索框下方给一行说明,
+     * 并在每个条目右侧标注「可多选 / 已选」。
+     *
+     * 注意: 该参数必须排在 onConfirm 之前 —— 已有调用点用的是尾随 lambda 写法,
+     * 尾随 lambda 只会绑定到最后一个参数。
+     */
+    showMultiSelectHint: Boolean = false,
     onConfirm: (Set<String>) -> Unit
 ) {
     var searchQuery by remember { mutableStateOf("") }
@@ -1020,6 +1043,20 @@ fun ContactsSelector(
                 onCheckedChange = null
             )
         },
+        trailingControl = if (showMultiSelectHint) {
+            { contact ->
+                val checked = contact.wxId in selectedWxIds
+                Text(
+                    text = if (checked) "已选" else "可多选",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (checked) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    }
+                )
+            }
+        } else null,
         onItemClick = { contact ->
             selectedWxIds = if (contact.wxId in selectedWxIds) {
                 selectedWxIds - contact.wxId
@@ -1044,7 +1081,10 @@ fun ContactsSelector(
                 }
             }
             selectedWxIds = newSelection
-        }
+        },
+        hintText = if (showMultiSelectHint) {
+            "可多选：勾选多个联系人/群，可一次发送给所有选中对象"
+        } else null
     )
 }
 
