@@ -460,14 +460,9 @@ private fun ContactPickerContent(
         initialSelectedWxIds = initialWxIds,
         onDismiss = onDismiss,
         onConfirm = { wxIds ->
-            // 保持用户勾选的先后顺序: 回传的是 Set, 这里按选择器里的显示顺序排序,
-            // 至少保证与初始选择一致, 避免任务里对象顺序随机跳动。
-            val ordered = wxIds.sortedBy { id ->
-                val index = initialWxIds.toList().indexOf(id)
-                if (index >= 0) index else Int.MAX_VALUE
-            }
+            // wxIds 实际是 LinkedHashSet, 保持用户的勾选先后顺序, 直接按它回传即可
             onSelected(
-                ordered.map { wxId ->
+                wxIds.map { wxId ->
                     ScheduleTarget(
                         wxId = wxId,
                         name = resolveContactName(wxId, contacts)
