@@ -156,7 +156,10 @@ object ScheduledMessage : ClickableFeature() {
         VOICE("语音"),
         VIDEO("视频"),
         FILE("文件"),
-        LINK("链接")
+        LINK("链接"),
+        // 微信收藏项: content 存收藏 localId, 发送时交给微信原生收藏发送通道,
+        // 因此图片/语音/视频/文件/链接/位置/音乐/小程序/聊天记录都能原样发出。
+        FAVORITE("收藏")
     }
 
     // 存储改用 kotlinx JSON (ignoreUnknownKeys=true): 原先的 Java 序列化对类结构零容忍,
@@ -648,7 +651,26 @@ object ScheduledMessage : ClickableFeature() {
                     }
                 }
             }
+            MessageType.FAVORITE -> sendFavoriteSegment(talker, segment)
         }
+    }
+
+    /**
+     * 收藏段: 交给微信原生收藏发送通道 (与 Hchat 定时任务的 TYPE_FAVORITE 同一条路径)。
+     * content 存收藏 localId。图片/语音/视频/文件等各种类型均由微信自己处理,
+     * 我们无需解析 favProto 或定位媒体文件。
+     */
+    private fun sendFavoriteSegment(talker: String, segment: MessageSegment): Boolean {
+        val localId = segment.content.trim().toLongOrNull()
+        if (localId == null || localId <= 0L) {
+            WeLogger.e(TAG, "favorite segment has invalid localId: ${segment.content}")
+            return false
+        }
+        return runCatching {
+            h.Hchat.hooks.api.core.WeChatApis.media()?.favorites()?.send(talker, localId) == true
+        }.onFailure {
+            WeLogger.e(TAG, "send favorite failed (localId=$localId)", it)
+        }.getOrDefault(false)
     }
 
     private fun sendTextSafely(talker: String, content: String): Boolean {
@@ -800,6 +822,10 @@ object ScheduledMessage : ClickableFeature() {
                     .onFailure { WeLogger.e(TAG, "legacy file send failed", it) }
                     .getOrDefault(false)
             }
+            MessageType.FAVORITE -> sendFavoriteSegment(
+                schedule.talker,
+                MessageSegment(type = MessageType.FAVORITE, content = schedule.content)
+            )
         }
     }
 
@@ -856,6 +882,7 @@ object ScheduledMessage : ClickableFeature() {
                 if (byRef) "视频: 引用原消息" else "视频: ${filePath.substringAfterLast('/').take(20)}"
             MessageType.FILE ->
                 if (byRef) "文件: 引用原消息" else "文件: ${filePath.substringAfterLast('/').take(20)}"
+            MessageType.FAVORITE -> "收藏: ${content.take(30)}"
         }
     }
 
@@ -1155,7 +1182,7 @@ object ScheduledMessage : ClickableFeature() {
 
                     segments.forEachIndexed { index, segment ->
                         val valid = when (segment.type) {
-                            MessageType.TEXT, MessageType.LINK -> segment.content.isNotBlank()
+                            MessageType.TEXT, MessageType.LINK, MessageType.FAVORITE -> segment.content.isNotBlank()
                             MessageType.IMAGE, MessageType.VOICE,
                             MessageType.VIDEO, MessageType.FILE -> segment.filePath.isNotBlank()
                         }
@@ -1249,7 +1276,7 @@ object ScheduledMessage : ClickableFeature() {
                 title = { Text("选择消息段类型") },
                 text = {
                     DefaultColumn {
-                        MessageType.values().forEach { type ->
+                        MessageType.values().filter { it != MessageType.FAVORITE }.forEach { type ->
                             ListItem(
                                 modifier = Modifier.clickable {
                                     pendingSegmentType = type
@@ -1344,6 +1371,9 @@ object ScheduledMessage : ClickableFeature() {
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
                                 }
+                            }
+                            MessageType.FAVORITE -> {
+                                Text("请通过消息长按菜单的「定时发送 → 从收藏添加」选择收藏内容")
                             }
                         }
                     }

@@ -630,37 +630,22 @@ object ScheduledMessageMenu : SwitchFeature(),
                         items.forEach { entry ->
                             ListItem(
                                 modifier = Modifier.clickable {
-                                    val seg = when (entry.type) {
-                                        FavoriteEntry.Type.TEXT -> MessageSegment(
-                                            type = ScheduleMessageType.TEXT,
-                                            content = entry.preview
+                                    // 统一交给微信原生收藏发送通道：图片/语音/视频/文件等
+                                    // 都由 favorites().send(talker, localId) 原样发出。
+                                    onSelected(
+                                        MessageSegment(
+                                            type = ScheduleMessageType.FAVORITE,
+                                            content = entry.localId.toString()
                                         )
-                                        FavoriteEntry.Type.IMAGE -> MessageSegment(
-                                            type = ScheduleMessageType.IMAGE,
-                                            filePath = entry.filePath
-                                        )
-                                        FavoriteEntry.Type.VOICE -> MessageSegment(
-                                            type = ScheduleMessageType.VOICE,
-                                            filePath = entry.filePath,
-                                            duration = entry.duration
-                                        )
-                                        FavoriteEntry.Type.VIDEO -> MessageSegment(
-                                            type = ScheduleMessageType.VIDEO,
-                                            filePath = entry.filePath
-                                        )
-                                        FavoriteEntry.Type.FILE -> MessageSegment(
-                                            type = ScheduleMessageType.FILE,
-                                            filePath = entry.filePath
-                                        )
-                                        else -> MessageSegment(
-                                            type = ScheduleMessageType.TEXT,
-                                            content = entry.preview
-                                        )
-                                    }
-                                    onSelected(seg)
+                                    )
                                 },
                                 headlineContent = { Text(entry.preview.ifBlank { "(空收藏)" }, maxLines = 2) },
-                                supportingContent = { Text(entry.type.label) }
+                                supportingContent = {
+                                    Text(
+                                        if (entry.summary.isNotBlank()) "${entry.type.label} · ${entry.summary}"
+                                        else entry.type.label
+                                    )
+                                }
                             )
                         }
                     }
