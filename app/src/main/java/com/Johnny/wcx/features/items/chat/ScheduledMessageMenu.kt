@@ -7,8 +7,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.items
-import androidx.compose.material3.Checkbox
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -39,14 +39,12 @@ import com.Johnny.wcx.features.api.core.models.MessageType
 import com.Johnny.wcx.features.api.ui.WeChatMessageContextMenuApi
 import com.Johnny.wcx.features.core.Feature
 import com.Johnny.wcx.features.core.SwitchFeature
-import com.Johnny.wcx.features.items.chat.FavoriteContentApi.FavoriteEntry
 import com.Johnny.wcx.features.items.chat.ScheduledMessage.MessageSegment
 import com.Johnny.wcx.features.items.chat.ScheduledMessage.MessageType as ScheduleMessageType
 import com.Johnny.wcx.features.items.chat.ScheduledMessage.ScheduleConfig
 import com.Johnny.wcx.ui.content.AlertDialogContent
 import com.Johnny.wcx.ui.content.Button
 import com.Johnny.wcx.ui.content.DefaultColumn
-import com.Johnny.wcx.ui.content.SingleContactSelector
 import com.Johnny.wcx.ui.content.TextButton
 import com.Johnny.wcx.ui.utils.CancelIcon
 import com.Johnny.wcx.ui.utils.SendIcon
@@ -351,107 +349,49 @@ object ScheduledMessageMenu : SwitchFeature(),
         segments: List<MessageSegment>,
         onDismiss: () -> Unit
     ) {
-        var subject by remember { mutableStateOf("") }
-        val timePickerState = rememberTimePickerState(
+        // 与模块端「添加定时任务」共用同一个编辑器组件, 两个入口功能完全一致:
+        // 发送对象 / 消息段列表 / 添加消息段 / 从收藏添加 / 发送时间 / 每天重复 / 启用。
+        ScheduleTaskEditor(
+            title = "定时发送",
+            initialTalker = talker,
+            initialTalkerName = talkerName,
+            initialSegments = segments,
             initialHour = 10,
             initialMinute = 0,
-            is24Hour = true
-        )
-        var repeatDaily by remember { mutableStateOf(true) }
-
-        val context = LocalContext.current
-
-        // 发送对象可变：默认来自长按消息所在会话，可改选任意联系人/群
-        var targetTalker by remember { mutableStateOf(talker) }
-        var targetTalkerName by remember { mutableStateOf(talkerName) }
-
-        // 内容段可变：初始来自选中消息，可继续从收藏添加
-        val currentSegments = remember { mutableStateListOf<MessageSegment>().apply { addAll(segments) } }
-
-        AlertDialogContent(
-            title = { Text("定时发送") },
-            text = {
-                DefaultColumn(scrollable = true) {
-                    OutlinedTextField(
-                        value = subject,
-                        onValueChange = { subject = it },
-                        label = { Text("主题（必填）") },
-                        modifier = Modifier.fillMaxWidth(),
-                        singleLine = true
-                    )
-
-                    Spacer(Modifier.height(8.dp))
-                    Text("发送对象", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-                    ListItem(
-                        modifier = Modifier.clickable {
-                            openContactPicker(context, targetTalker) { wxId, name ->
-                                targetTalker = wxId
-                                targetTalkerName = name
-                            }
-                        },
-                        headlineContent = {
-                            Text(
-                                if (targetTalkerName.isNotBlank()) targetTalkerName else targetTalker,
-                                color = MaterialTheme.colorScheme.primary
-                            )
-                        },
-                        supportingContent = { Text("$targetTalker  ·  点击更换联系人/群") }
-                    )
-
-                    Spacer(Modifier.height(8.dp))
-                    Text("发送时间", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-                    TimePicker(state = timePickerState)
-
-                    ListItem(
-                        modifier = Modifier.clickable { repeatDaily = !repeatDaily },
-                        trailingContent = { Switch(checked = repeatDaily, onCheckedChange = null) },
-                        headlineContent = { Text("每天重复") },
-                        supportingContent = { Text(if (repeatDaily) "每天同一时间发送" else "仅发送一次") }
-                    )
-
-                    Spacer(Modifier.height(8.dp))
-                    Text("发送内容", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-                    ListItem(
-                        modifier = Modifier.clickable {
-                            openFavoritePicker(context) { seg -> currentSegments.add(seg) }
-                        },
-                        headlineContent = {
-                            Text("从收藏添加内容", color = MaterialTheme.colorScheme.primary)
-                        },
-                        supportingContent = { Text("点击选择收藏的消息，追加到本任务") }
-                    )
-                    ListItem(
-                        headlineContent = { Text("内容摘要") },
-                        supportingContent = { Text(segmentsSummary(currentSegments)) }
-                    )
+            initialRepeatDaily = true,
+            initialEnabled = true,
+            subjectRequired = true,
+            onDismiss = onDismiss,
+            onConfirm = { draft ->
+                if (draft.subject.isBlank()) {
+                    showToast("请输入主题")
+                    return@ScheduleTaskEditor
                 }
-            },
-            dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
-            confirmButton = {
-                Button(onClick = {
-                    if (subject.isBlank()) {
-                        showToast("请输入主题")
-                        return@Button
-                    }
+                if (draft.talker.isBlank()) {
+                    showToast("请选择发送对象")
+                    return@ScheduleTaskEditor
+                }
+                if (draft.segments.isEmpty()) {
+                    showToast("请至少添加一个消息段")
+                    return@ScheduleTaskEditor
+                }
+                val schedule = ScheduleConfig(
+                    id = "${System.currentTimeMillis()}",
+                    talker = draft.talker,
+                    talkerName = draft.talkerName,
+                    subject = draft.subject.trim(),
+                    hour = draft.hour,
+                    minute = draft.minute,
+                    repeatDaily = draft.repeatDaily,
+                    // 关闭"每天重复"即为一次性任务：发送一次后自动停用，避免残留
+                    oneTimeOnly = !draft.repeatDaily,
+                    enabled = draft.enabled,
+                    segments = draft.segments
+                )
 
-                    val schedule = ScheduleConfig(
-                        id = "${System.currentTimeMillis()}",
-                        talker = targetTalker,
-                        talkerName = targetTalkerName,
-                        subject = subject.trim(),
-                        hour = timePickerState.hour,
-                        minute = timePickerState.minute,
-                        repeatDaily = repeatDaily,
-                        // 关闭"每天重复"即为一次性任务：发送一次后自动停用，避免残留
-                        oneTimeOnly = !repeatDaily,
-                        enabled = true,
-                        segments = currentSegments.toList()
-                    )
-
-                    ScheduledMessage.addSchedule(schedule)
-                    showToast("定时任务已添加")
-                    onDismiss()
-                }) { Text("确认") }
+                ScheduledMessage.addSchedule(schedule)
+                showToast("定时任务已添加")
+                onDismiss()
             }
         )
     }
@@ -528,11 +468,6 @@ object ScheduledMessageMenu : SwitchFeature(),
 
     // ------------------------------------------------------------------
 
-    private fun segmentsSummary(segments: List<MessageSegment>): String {
-        if (segments.isEmpty()) return "空任务"
-        val typesStr = segments.joinToString("+") { it.type.description }
-        return "${segments.size}段消息: $typesStr"
-    }
 
     /** 兼容旧数据（单段 legacy 字段）的任务摘要 */
     private fun scheduleSummary(schedule: ScheduleConfig): String {
@@ -542,116 +477,8 @@ object ScheduledMessageMenu : SwitchFeature(),
             schedule.messageType.description
         }
     }
-
-    // ------------------------------------------------------------------
-    // 新功能: 发送对象选择（联系人/群）
-    // ------------------------------------------------------------------
-
     /**
      * 打开全屏联系人选择器，选一个联系人/群作为定时任务发送对象。
      * 在独立窗口展示，避免与「定时发送」确认弹窗叠层导致尺寸/焦点异常。
      */
-    private fun openContactPicker(context: android.content.Context, initialWxId: String, onSelected: (String, String) -> Unit) {
-        showComposeDialog(context, fullScreen = true) {
-            ContactPickerContent(
-                initialWxId = initialWxId,
-                onDismiss = onDismiss,
-                onSelected = onSelected
-            )
-        }
-    }
-
-    @Composable
-    private fun ContactPickerContent(
-        initialWxId: String,
-        onDismiss: () -> Unit,
-        onSelected: (String, String) -> Unit
-    ) {
-        var contacts by remember { mutableStateOf<List<IWeContact>>(emptyList()) }
-        LaunchedEffect(Unit) {
-            withContext(Dispatchers.IO) {
-                if (WeDatabaseApi.isReady) {
-                    val list: List<IWeContact> = runCatching {
-                        WeDatabaseApi.getFriends() + WeDatabaseApi.getGroups() +
-                            WeDatabaseApi.getOfficialAccounts()
-                    }.getOrDefault(emptyList())
-                    withContext(Dispatchers.Main) { contacts = list }
-                }
-            }
-        }
-        SingleContactSelector(
-            title = "选择发送对象（联系人/群）",
-            contacts = contacts,
-            initialSelectedWxId = initialWxId.takeIf { it.isNotBlank() },
-            onDismiss = onDismiss,
-            onConfirm = { wxId ->
-                val name = runCatching { WeDatabaseApi.getDisplayName(wxId) }.getOrDefault("")
-                    .takeIf { it.isNotBlank() && it != wxId }
-                    ?: contacts.firstOrNull { it.wxId == wxId }?.nickname?.takeIf { it.isNotBlank() }
-                    ?: wxId
-                onSelected(wxId, name)
-            }
-        )
-    }
-
-    // ------------------------------------------------------------------
-    // 新功能: 从收藏添加内容
-    // ------------------------------------------------------------------
-
-    private fun openFavoritePicker(context: android.content.Context, onSelected: (MessageSegment) -> Unit) {
-        showComposeDialog(context, fullScreen = true) {
-            FavoritePickerContent(onDismiss = onDismiss, onSelected = onSelected)
-        }
-    }
-
-    @Composable
-    private fun FavoritePickerContent(
-        onDismiss: () -> Unit,
-        onSelected: (MessageSegment) -> Unit
-    ) {
-        var items by remember { mutableStateOf<List<FavoriteEntry>>(emptyList()) }
-        LaunchedEffect(Unit) {
-            withContext(Dispatchers.IO) {
-                val list = FavoriteContentApi.loadFavorites()
-                withContext(Dispatchers.Main) { items = list }
-            }
-        }
-        AlertDialogContent(
-            title = { Text("从收藏添加") },
-            text = {
-                DefaultColumn(scrollable = true) {
-                    if (items.isEmpty()) {
-                        Text(
-                            "暂无可添加的收藏，或收藏数据尚未就绪",
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(vertical = 16.dp)
-                        )
-                    } else {
-                        items.forEach { entry ->
-                            ListItem(
-                                modifier = Modifier.clickable {
-                                    // 统一交给微信原生收藏发送通道：图片/语音/视频/文件等
-                                    // 都由 favorites().send(talker, localId) 原样发出。
-                                    onSelected(
-                                        MessageSegment(
-                                            type = ScheduleMessageType.FAVORITE,
-                                            content = entry.localId.toString()
-                                        )
-                                    )
-                                },
-                                headlineContent = { Text(entry.preview.ifBlank { "(空收藏)" }, maxLines = 2) },
-                                supportingContent = {
-                                    Text(
-                                        if (entry.summary.isNotBlank()) "${entry.type.label} · ${entry.summary}"
-                                        else entry.type.label
-                                    )
-                                }
-                            )
-                        }
-                    }
-                }
-            },
-            dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } }
-        )
-    }
 }

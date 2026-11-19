@@ -8,10 +8,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.net.Uri
 import android.os.Build
-import android.provider.OpenableColumns
 import androidx.activity.ComponentActivity
-import androidx.activity.result.PickVisualMediaRequest
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -37,8 +34,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.fragment.app.FragmentActivity
-import com.Johnny.wcx.activity.TransparentActivity
 import com.Johnny.wcx.features.api.core.WeDatabaseApi
 import com.Johnny.wcx.features.api.core.WeMessageApi
 import com.Johnny.wcx.features.api.core.WeServiceApi
@@ -67,14 +62,11 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
-import java.nio.file.Files
-import java.nio.file.StandardCopyOption
 import java.time.LocalDate
 import java.time.LocalTime
 import java.time.format.DateTimeFormatter
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CancellationException
-import kotlin.io.path.absolutePathString
 
 @Feature(
     name = "定时发送消息",
@@ -863,97 +855,9 @@ object ScheduledMessage : ClickableFeature() {
         }
     }
 
-    private fun segmentsSummary(segments: List<MessageSegment>): String {
-        if (segments.isEmpty()) return ""
-        val typesStr = segments.joinToString("+") { it.type.description }
-        return "${segments.size}段消息: $typesStr"
-    }
 
-    private fun MessageSegment.summary(): String {
-        val byRef = filePath.isBlank() && (srcSvrId > 0 || srcMsgId > 0)
-        return when (type) {
-            MessageType.TEXT -> "文本: ${content.take(20)}"
-            MessageType.LINK -> "链接: ${content.take(20)}"
-            MessageType.IMAGE ->
-                if (byRef) "图片: 引用原消息" else "图片: ${filePath.substringAfterLast('/').take(20)}"
-            MessageType.VOICE ->
-                if (byRef) "语音: 引用原消息" else "语音: ${duration}ms"
-            MessageType.VIDEO ->
-                if (byRef) "视频: 引用原消息" else "视频: ${filePath.substringAfterLast('/').take(20)}"
-            MessageType.FILE ->
-                if (byRef) "文件: 引用原消息" else "文件: ${filePath.substringAfterLast('/').take(20)}"
-            MessageType.FAVORITE -> "收藏: ${content.take(30)}"
-        }
-    }
 
-    /**
-     * 通过 TransparentActivity 拉起系统文件选择器，把选中的 Uri 内容拷贝到 moduleCache
-     * 并把本地路径回调给调用方。IMAGE/VIDEO 走 PickVisualMedia，VOICE/FILE 走 OpenDocument。
-     */
-    private fun pickMediaFile(
-        type: MessageType,
-        onPicked: (String) -> Unit
-    ) {
-        TransparentActivity.launch(HostInfo.application) {
-            if (type == MessageType.IMAGE || type == MessageType.VIDEO) {
-                val launcher = registerForActivityResult(
-                    ActivityResultContracts.PickVisualMedia()
-                ) { uri ->
-                    finish()
-                    if (uri == null) return@registerForActivityResult
-                    copyUriToCache(uri, type)?.let(onPicked)
-                }
-                val visualMediaType = if (type == MessageType.IMAGE) {
-                    ActivityResultContracts.PickVisualMedia.ImageOnly
-                } else {
-                    ActivityResultContracts.PickVisualMedia.VideoOnly
-                }
-                launcher.launch(PickVisualMediaRequest(visualMediaType))
-            } else {
-                val mimeTypes = when (type) {
-                    MessageType.VOICE -> arrayOf("audio/*")
-                    MessageType.FILE -> arrayOf("*/*")
-                    else -> arrayOf("*/*")
-                }
-                val launcher = registerForActivityResult(
-                    ActivityResultContracts.OpenDocument()
-                ) { uri ->
-                    finish()
-                    if (uri == null) return@registerForActivityResult
-                    copyUriToCache(uri, type)?.let(onPicked)
-                }
-                launcher.launch(mimeTypes)
-            }
-        }
-    }
 
-    private fun FragmentActivity.copyUriToCache(uri: Uri, type: MessageType): String? {
-        return try {
-            val resolver = contentResolver
-            val displayName = resolver.query(
-                uri,
-                arrayOf(OpenableColumns.DISPLAY_NAME),
-                null,
-                null,
-                null
-            )?.use { cursor ->
-                if (cursor.moveToFirst()) cursor.getString(0) else null
-            } ?: "picked_${System.currentTimeMillis()}"
-            val safeName = displayName.ifBlank { "picked_${System.currentTimeMillis()}" }
-            val destFile = KnownPaths.moduleCache.resolve("sched_${System.currentTimeMillis()}_$safeName")
-            resolver.openInputStream(uri)?.use { input ->
-                Files.copy(input, destFile, StandardCopyOption.REPLACE_EXISTING)
-            } ?: run {
-                WeLogger.e(TAG, "copyUriToCache: openInputStream returned null for $uri")
-                return null
-            }
-            WeLogger.i(TAG, "picked media file cached: ${destFile.absolutePathString()}")
-            destFile.absolutePathString()
-        } catch (e: Exception) {
-            WeLogger.e(TAG, "copyUriToCache failed for type=$type uri=$uri", e)
-            null
-        }
-    }
 
     @OptIn(ExperimentalMaterial3Api::class)
     override fun onClick(context: ComponentActivity) {
@@ -1062,343 +966,80 @@ object ScheduledMessage : ClickableFeature() {
         existing: ScheduleConfig? = null
     ) {
         val isEditing = existing != null
-        val contacts = remember {
-            WeDatabaseApi.getFriends().map { it.wxId to it.nickname } +
-                    WeDatabaseApi.getGroups().map { it.wxId to it.displayName }
+        val initialSegments = remember {
+            existing?.let {
+                if (it.segments.isNotEmpty()) {
+                    it.segments
+                } else if (it.content.isNotBlank() || it.filePath.isNotBlank()) {
+                    listOf(
+                        MessageSegment(
+                            type = it.messageType,
+                            content = it.content,
+                            filePath = it.filePath,
+                            duration = it.duration
+                        )
+                    )
+                } else {
+                    emptyList()
+                }
+            } ?: emptyList()
         }
 
-        var selectedTalker by remember { mutableStateOf(existing?.talker ?: "") }
-        var selectedTalkerName by remember { mutableStateOf(existing?.talkerName ?: "") }
-        var segments by remember {
-            mutableStateOf(
-                existing?.let {
-                    if (it.segments.isNotEmpty()) {
-                        it.segments
-                    } else if (it.content.isNotBlank() || it.filePath.isNotBlank()) {
-                        listOf(
-                            MessageSegment(
-                                type = it.messageType,
-                                content = it.content,
-                                filePath = it.filePath,
-                                duration = it.duration
-                            )
-                        )
-                    } else {
-                        emptyList()
-                    }
-                } ?: emptyList()
-            )
-        }
-        val timePickerState = rememberTimePickerState(
+        // 与长按菜单端「定时发送」共用同一个编辑器组件, 两个入口功能完全一致:
+        // 发送对象 / 消息段列表 / 添加消息段 / 从收藏添加 / 发送时间 / 每天重复 / 启用。
+        ScheduleTaskEditor(
+            title = if (isEditing) "编辑定时任务" else "添加定时任务",
+            initialTalker = existing?.talker ?: "",
+            initialTalkerName = existing?.talkerName ?: "",
+            initialSegments = initialSegments,
             initialHour = existing?.hour ?: 9,
             initialMinute = existing?.minute ?: 0,
-            is24Hour = true
-        )
-        var repeatDaily by remember { mutableStateOf(existing?.repeatDaily ?: true) }
-        var enabled by remember { mutableStateOf(existing?.enabled ?: true) }
-        var showTalkerSelector by remember { mutableStateOf(false) }
-        var talkerSearchQuery by remember { mutableStateOf("") }
-        var showSegmentTypeDialog by remember { mutableStateOf(false) }
-        var pendingSegmentType by remember { mutableStateOf<MessageType?>(null) }
-        var showSegmentEditDialog by remember { mutableStateOf(false) }
-
-        var tempContent by remember { mutableStateOf("") }
-        var tempFilePath by remember { mutableStateOf("") }
-        var tempDuration by remember { mutableStateOf("0") }
-
-        AlertDialogContent(
-            title = { Text(if (isEditing) "编辑定时任务" else "添加定时任务") },
-            text = {
-                DefaultColumn(scrollable = true) {
-                    ListItem(
-                        modifier = Modifier.clickable { showTalkerSelector = true },
-                        headlineContent = { Text(if (selectedTalkerName.isNotBlank()) selectedTalkerName else "选择发送对象") },
-                        supportingContent = { Text(selectedTalker) }
-                    )
-
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Text("消息段列表", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-
-                    if (segments.isEmpty()) {
-                        Text(
-                            "还没有消息段，点击下方按钮添加",
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(vertical = 8.dp)
-                        )
-                    } else {
-                        segments.forEachIndexed { index, segment ->
-                            ListItem(
-                                headlineContent = { Text(segment.summary()) },
-                                supportingContent = { Text("第${index + 1}段 - ${segment.type.description}") },
-                                trailingContent = {
-                                    TextButton(onClick = {
-                                        segments = segments.toMutableList().also { it.removeAt(index) }
-                                    }) { Text("删除") }
-                                }
-                            )
-                        }
-                    }
-
-                    Button(
-                        onClick = { showSegmentTypeDialog = true },
-                        modifier = Modifier.fillMaxWidth()
-                    ) { Text("+ 添加消息段") }
-
-                    Spacer(modifier = Modifier.height(12.dp))
-                    Text("发送时间", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-
-                    TimePicker(state = timePickerState)
-
-                    ListItem(
-                        modifier = Modifier.clickable { repeatDaily = !repeatDaily },
-                        trailingContent = { Switch(checked = repeatDaily, onCheckedChange = null) },
-                        headlineContent = { Text("每天重复") },
-                        supportingContent = { Text(if (repeatDaily) "每天同一时间发送" else "仅发送一次") }
-                    )
-
-                    ListItem(
-                        modifier = Modifier.clickable { enabled = !enabled },
-                        trailingContent = { Switch(checked = enabled, onCheckedChange = null) },
-                        headlineContent = { Text("启用") },
-                        supportingContent = { Text(if (enabled) "任务将在指定时间执行" else "任务不会执行") }
-                    )
+            initialRepeatDaily = existing?.repeatDaily ?: true,
+            initialEnabled = existing?.enabled ?: true,
+            subjectRequired = false,
+            onDismiss = onDismiss,
+            onConfirm = { draft ->
+                if (draft.talker.isBlank()) {
+                    showToast("请选择发送对象")
+                    return@ScheduleTaskEditor
                 }
-            },
-            dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
-            confirmButton = {
-                Button(onClick = {
-                    val h = timePickerState.hour
-                    val m = timePickerState.minute
-
-                    if (selectedTalker.isBlank()) {
-                        showToast("请选择发送对象")
-                        return@Button
+                if (draft.segments.isEmpty()) {
+                    showToast("请至少添加一个消息段")
+                    return@ScheduleTaskEditor
+                }
+                draft.segments.forEachIndexed { index, segment ->
+                    val valid = when (segment.type) {
+                        MessageType.TEXT, MessageType.LINK, MessageType.FAVORITE -> segment.content.isNotBlank()
+                        MessageType.IMAGE, MessageType.VOICE,
+                        MessageType.VIDEO, MessageType.FILE -> segment.filePath.isNotBlank()
                     }
-
-                    if (segments.isEmpty()) {
-                        showToast("请至少添加一个消息段")
-                        return@Button
+                    if (!valid) {
+                        showToast("第${index + 1}段消息内容无效")
+                        return@ScheduleTaskEditor
                     }
+                }
 
-                    segments.forEachIndexed { index, segment ->
-                        val valid = when (segment.type) {
-                            MessageType.TEXT, MessageType.LINK, MessageType.FAVORITE -> segment.content.isNotBlank()
-                            MessageType.IMAGE, MessageType.VOICE,
-                            MessageType.VIDEO, MessageType.FILE -> segment.filePath.isNotBlank()
-                        }
-                        if (!valid) {
-                            showToast("第${index + 1}段消息内容无效")
-                            return@Button
-                        }
-                    }
-
-                    val schedule = ScheduleConfig(
+                onSave(
+                    ScheduleConfig(
                         id = existing?.id ?: "${System.currentTimeMillis()}",
-                        talker = selectedTalker,
-                        talkerName = selectedTalkerName,
+                        talker = draft.talker,
+                        talkerName = draft.talkerName,
+                        subject = draft.subject,
                         messageType = existing?.messageType ?: MessageType.TEXT,
                         content = existing?.content ?: "",
                         filePath = existing?.filePath ?: "",
                         duration = existing?.duration ?: 0,
-                        hour = h,
-                        minute = m,
-                        repeatDaily = repeatDaily,
+                        hour = draft.hour,
+                        minute = draft.minute,
+                        repeatDaily = draft.repeatDaily,
                         // 关闭"每天重复"即为一次性任务：发送一次后自动停用
-                        oneTimeOnly = !repeatDaily,
-                        enabled = enabled,
-                        segments = segments
+                        oneTimeOnly = !draft.repeatDaily,
+                        enabled = draft.enabled,
+                        segments = draft.segments
                     )
-
-                    onSave(schedule)
-                }) { Text(if (isEditing) "保存" else "添加") }
+                )
             }
         )
-
-        if (showTalkerSelector) {
-            val filteredContacts = remember(talkerSearchQuery, contacts) {
-                if (talkerSearchQuery.isBlank()) contacts
-                else contacts.filter { (wxId, name) ->
-                    name.contains(talkerSearchQuery, ignoreCase = true) ||
-                            wxId.contains(talkerSearchQuery, ignoreCase = true)
-                }
-            }
-            AlertDialogContent(
-                title = { Text("选择发送对象") },
-                text = {
-                    DefaultColumn {
-                        OutlinedTextField(
-                            value = talkerSearchQuery,
-                            onValueChange = { talkerSearchQuery = it },
-                            modifier = Modifier.fillMaxWidth(),
-                            placeholder = { Text("搜索昵称或微信号") },
-                            singleLine = true
-                        )
-                        if (filteredContacts.isEmpty()) {
-                            Text(
-                                "无匹配的联系人",
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(vertical = 16.dp)
-                            )
-                        } else {
-                            LazyColumn(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .heightIn(max = 400.dp),
-                                verticalArrangement = Arrangement.spacedBy(0.dp)
-                            ) {
-                                items(filteredContacts, key = { it.first }) { (wxId, name) ->
-                                    ListItem(
-                                        modifier = Modifier.clickable {
-                                            selectedTalker = wxId
-                                            selectedTalkerName = name
-                                            showTalkerSelector = false
-                                            talkerSearchQuery = ""
-                                        },
-                                        headlineContent = { Text(name) },
-                                        supportingContent = { Text(wxId) },
-                                        trailingContent = { Text(if (selectedTalker == wxId) "✓" else "") }
-                                    )
-                                }
-                            }
-                        }
-                    }
-                },
-                dismissButton = { TextButton(onClick = {
-                    showTalkerSelector = false
-                    talkerSearchQuery = ""
-                }) { Text("取消") } },
-                confirmButton = {}
-            )
-        }
-
-        if (showSegmentTypeDialog) {
-            AlertDialogContent(
-                title = { Text("选择消息段类型") },
-                text = {
-                    DefaultColumn {
-                        MessageType.values().filter { it != MessageType.FAVORITE }.forEach { type ->
-                            ListItem(
-                                modifier = Modifier.clickable {
-                                    pendingSegmentType = type
-                                    tempContent = ""
-                                    tempFilePath = ""
-                                    tempDuration = "0"
-                                    showSegmentTypeDialog = false
-                                    showSegmentEditDialog = true
-                                },
-                                headlineContent = { Text(type.description) }
-                            )
-                        }
-                    }
-                },
-                dismissButton = { TextButton(onClick = { showSegmentTypeDialog = false }) { Text("取消") } },
-                confirmButton = {}
-            )
-        }
-
-        if (showSegmentEditDialog && pendingSegmentType != null) {
-            val type = pendingSegmentType!!
-            AlertDialogContent(
-                title = { Text("添加${type.description}消息段") },
-                text = {
-                    DefaultColumn {
-                        when (type) {
-                            MessageType.TEXT -> {
-                                OutlinedTextField(
-                                    value = tempContent,
-                                    onValueChange = { tempContent = it },
-                                    label = { Text("消息内容") },
-                                    modifier = Modifier.fillMaxWidth(),
-                                    minLines = 3
-                                )
-                            }
-                            MessageType.LINK -> {
-                                OutlinedTextField(
-                                    value = tempContent,
-                                    onValueChange = { tempContent = it },
-                                    label = { Text("链接URL") },
-                                    modifier = Modifier.fillMaxWidth(),
-                                    minLines = 2
-                                )
-                            }
-                            MessageType.VOICE -> {
-                                Button(
-                                    onClick = {
-                                        pickMediaFile(type) { path -> tempFilePath = path }
-                                    },
-                                    modifier = Modifier.fillMaxWidth()
-                                ) { Text("选择语音文件") }
-                                if (tempFilePath.isNotBlank()) {
-                                    Text(
-                                        "已选: ${tempFilePath.substringAfterLast('/')}",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
-                                OutlinedTextField(
-                                    value = tempDuration,
-                                    onValueChange = { tempDuration = it.filter { c -> c.isDigit() } },
-                                    label = { Text("语音时长（毫秒）") },
-                                    modifier = Modifier.fillMaxWidth()
-                                )
-                            }
-                            MessageType.IMAGE, MessageType.VIDEO -> {
-                                Button(
-                                    onClick = {
-                                        pickMediaFile(type) { path -> tempFilePath = path }
-                                    },
-                                    modifier = Modifier.fillMaxWidth()
-                                ) { Text("选择${type.description}文件") }
-                                if (tempFilePath.isNotBlank()) {
-                                    Text(
-                                        "已选: ${tempFilePath.substringAfterLast('/')}",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
-                            }
-                            MessageType.FILE -> {
-                                Button(
-                                    onClick = {
-                                        pickMediaFile(type) { path -> tempFilePath = path }
-                                    },
-                                    modifier = Modifier.fillMaxWidth()
-                                ) { Text("选择文件") }
-                                if (tempFilePath.isNotBlank()) {
-                                    Text(
-                                        "已选: ${tempFilePath.substringAfterLast('/')}",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
-                            }
-                            MessageType.FAVORITE -> {
-                                Text("请通过消息长按菜单的「定时发送 → 从收藏添加」选择收藏内容")
-                            }
-                        }
-                    }
-                },
-                dismissButton = {
-                    TextButton(onClick = {
-                        showSegmentEditDialog = false
-                        pendingSegmentType = null
-                    }) { Text("取消") }
-                },
-                confirmButton = {
-                    Button(onClick = {
-                        val newSegment = MessageSegment(
-                            type = type,
-                            content = tempContent,
-                            filePath = tempFilePath,
-                            duration = tempDuration.toIntOrNull() ?: 0
-                        )
-                        segments = segments + newSegment
-                        showSegmentEditDialog = false
-                        pendingSegmentType = null
-                    }) { Text("添加") }
-                }
-            )
-        }
     }
 
     @Composable

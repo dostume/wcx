@@ -2189,30 +2189,46 @@ object WeMessageApi : ApiFeature(), IResolveDex {
             return null
         }
 
-        // 有原图行则优先下载原图, 否则退回基础行
-        val targetRow = baseRow.hdImgId.takeIf { it > 0 }
-            ?.let { queryImgInfoRowById(it) }
-            ?.also { WeLogger.i(TAG, "image has original (hdImgId=${baseRow.hdImgId}), downloading original") }
-            ?: baseRow
+        // v301: 触发的目标是**消息自己的 ImgInfo2 行**(baseRow), 不是 hdImgId 指向的那一行。
+        // hdImgId 指向的是 msgSvrId=null 的原图占位行, 传它微信会按普通档处理 ->
+        // 只落 HEVC 中间件 -> iscomplete=1 -> 之后全部 "task already done" 静默忽略。
+        // 画质档(param2)由 imageHasHd 判定: 有独立原图用 HD 档(param2=1), 没有用大图档(param2=0)。
+        val hasHd = imageHasHd(msgSvrId)
+        WeLogger.i(
+            TAG,
+            "cacheImage: svrId=$msgSvrId 消息行localId=${baseRow.localId} " +
+                    "hdImgId=${baseRow.hdImgId} 档位=${if (hasHd) "原图(HD)" else "大图"}"
+        )
 
         // 已在磁盘上则直接返回
-        resolveExistingImageFile(targetRow)?.let { return it }
+        resolveExistingImageFile(baseRow)?.let { return it }
+        // 原图行也可能已经落地 (微信自己下好的), 一并检查
+        if (hasHd) {
+            baseRow.hdImgId.takeIf { it > 0 }
+                ?.let { queryImgInfoRowById(it) }
+                ?.let { resolveExistingImageFile(it) }
+                ?.let { return it }
+        }
 
-        // 触发 CDN 下载, 轮询直到文件真正落地。talker 用基础行的 (原图行可能未存 msgTalker)。
-        if (!triggerDownload(targetRow.localId, targetRow.talker.ifEmpty { baseRow.talker })) {
+        // 触发 CDN 下载, 轮询直到文件真正落地。
+        // talker 用基础行的 (原图行可能未存 msgTalker)。
+        // msgId 取 message 表主键 —— MsgIdTalker 的第一个字段是 msgId, 不是 localId、不是 msgSvrId。
+        val msgId = queryMsgIdBySvrId(msgSvrId) ?: baseRow.localId
+        val talker = baseRow.talker
+        if (!triggerDownload(baseRow.localId, msgId, talker, hasHd)) {
             WeLogger.w(
                 TAG,
                 "cacheImage: trigger download rejected, msgSvrId=" + msgSvrId +
-                    ", localId=" + targetRow.localId
+                    ", localId=" + baseRow.localId
             )
             return null
         }
-        val cached = pollUntilImageFileExists(targetRow.localId)
+        val cached = pollUntilImageFileExists(baseRow.localId)
         if (cached == null) {
             WeLogger.w(
                 TAG,
                 "cacheImage: download timeout, msgSvrId=" + msgSvrId +
-                    ", localId=" + targetRow.localId
+                    ", localId=" + baseRow.localId
             )
         }
         return cached
@@ -2246,13 +2262,38 @@ object WeMessageApi : ApiFeature(), IResolveDex {
         }
     }
 
-    private fun triggerDownload(imgLocalId: Long, talker: String): Boolean {
+    /**
+     * 触发微信的图片 CDN 下载。
+     *
+     * @param imgMsgLocalId 消息自己的 ImgInfo2 行 localId (**不是** hdImgId 指向的原图占位行)
+     * @param msgId message 表主键 —— MsgIdTalker 的第一个字段是 msgId, 不是 localId、不是 msgSvrId
+     * @param talker 会话 wxid
+     * @param hasHd 这张图有没有独立原图。true -> 原图配方(param2=1), false -> 大图配方(param2=0)
+     *
+     * 配方来自 8.0.76 设备日志里微信自己的调用 (2026-10-16 16:02:57 抓到):
+     * `b(localId=19533, MsgIdTalker(102702,talker), 2=1, 3=100000, 4=2131231842, cb, 6=0, 7=false)`。
+     *
+     * 两个最易错的点:
+     *  1. **param0 必须是消息自己的 ImgInfo2 行 localId**。传 hdImgId 指向的那行
+     *     (msgSvrId=null 的原图占位行) -> 微信按普通档处理, 只落 HEVC 中间件,
+     *     iscomplete=1, 之后所有重触发都被 "task already done" 静默忽略。
+     *  2. **MsgIdTalker 第一个字段是 message.msgId**。传 localId 同样会被静默忽略。
+     *
+     * 画质档 (param2) 按有无独立原图分流: 无原图的图 (hdlength=-1) 硬要 param2=1,
+     * 微信会判定该原图不存在、什么都不下 (实测 onDisk 恒为 0)。
+     */
+    private fun triggerDownload(
+        imgMsgLocalId: Long,
+        msgId: Long,
+        talker: String,
+        hasHd: Boolean
+    ): Boolean {
         return try {
             val m = WeServiceApi.methodDownloadImageServiceDownloadImage.method
             val downloadService = m.declaringClass.createInstance()
 
             val msgIdTalker = "com.tencent.mm.plugin.msg.MsgIdTalker".toClass()
-                .createInstance(imgLocalId, talker)
+                .createInstance(msgId, talker)
 
             val wClass = m.parameterTypes[5]
             val listener = Proxy.newProxyInstance(wClass.classLoader, arrayOf(wClass)) { proxy, method, args ->
@@ -2264,13 +2305,83 @@ object WeMessageApi : ApiFeature(), IResolveDex {
                 }
             }
 
-            val result = m.invoke(downloadService, imgLocalId, msgIdTalker, 0, null, 0, listener, -1, false)
-            WeLogger.d(TAG, "triggerDownload result=$result")
+            val (quality, p7) = if (hasHd) IMG_HD_QUALITY to false else 0 to true
+            WeLogger.i(
+                TAG,
+                "触发下载: 消息行localId=$imgMsgLocalId msgId=$msgId talker=$talker " +
+                        "档位=${if (hasHd) "原图(HD)" else "大图"} param2=$quality " +
+                        "param3=$IMG_HD_SCENE param4=$IMG_HD_TYPE_MASK param6=0 param7=$p7"
+            )
+            val result = try {
+                m.invoke(
+                    downloadService,
+                    imgMsgLocalId,
+                    msgIdTalker,
+                    quality,
+                    Integer.valueOf(IMG_HD_SCENE),
+                    IMG_HD_TYPE_MASK,
+                    listener,
+                    0,
+                    p7
+                )
+            } catch (e: Exception) {
+                // 配方万一在微信内部抛异常 (比如它对 param3 做了别的类型假设),
+                // 退回大图档再试一次 —— 保留已验证的 scene/mask/param6 常量。
+                WeLogger.e(TAG, "触发下载抛异常, 退回大图档重试一次", e)
+                m.invoke(
+                    downloadService,
+                    imgMsgLocalId,
+                    msgIdTalker,
+                    0,
+                    Integer.valueOf(IMG_HD_SCENE),
+                    IMG_HD_TYPE_MASK,
+                    listener,
+                    0,
+                    true
+                )
+            }
+            WeLogger.i(TAG, "triggerDownload result=$result localId=$imgMsgLocalId msgId=$msgId")
             (result as? Int)?.let { it >= 0 } ?: false
         } catch (e: Exception) {
-            WeLogger.e(TAG, "triggerDownload failed", e)
+            WeLogger.e(TAG, "triggerDownload failed (localId=$imgMsgLocalId msgId=$msgId)", e)
             false
         }
+    }
+
+    /**
+     * 微信原图下载配方常量 (来自 8.0.76 dex + 设备日志实测)。
+     * - [IMG_HD_QUALITY] 对应 param2, 微信侧 HD 请求固定传 1
+     * - [IMG_HD_SCENE] 对应 param3 (Object), 微信侧实测传 Integer(100000)
+     * - [IMG_HD_TYPE_MASK] 对应 param4, dex 里是硬编码 const 2131231842 (0x7F080462)
+     */
+    private const val IMG_HD_QUALITY = 1
+    private const val IMG_HD_SCENE = 100000
+    private const val IMG_HD_TYPE_MASK = 2131231842
+
+    /** 这张图有没有独立原图档 (用于选下载配方)。 */
+    private fun imageHasHd(msgSvrId: Long): Boolean {
+        val content = runCatching {
+            WeDatabaseApi.rawQuery(
+                "SELECT content FROM message WHERE msgSvrId=? LIMIT 1",
+                arrayOf<Any>(msgSvrId)
+            ).use { c -> if (c.moveToFirst() && !c.isNull(0)) c.getString(0) else null }
+        }.getOrNull() ?: return false
+        // 属性 18 = 有原图; 属性 15 = hdlength 为 -1, 根本没有原图档。
+        // 不依赖 hdlength 正负 (正则易误匹配), 而是看 cdnhdimgurl / cdnhdwidth / cdnhdheight。
+        val hasHdUrl = extractXmlAttr(content, "cdnhdimgurl").isNotBlank()
+        val hdWidth = extractXmlAttr(content, "cdnhdwidth").toLongOrNull() ?: 0L
+        val hdHeight = extractXmlAttr(content, "cdnhdheight").toLongOrNull() ?: 0L
+        return hasHdUrl || hdWidth > 0L || hdHeight > 0L
+    }
+
+    /** 查 message 表主键 (MsgIdTalker 需要它, 不是 localId 也不是 msgSvrId)。 */
+    private fun queryMsgIdBySvrId(msgSvrId: Long): Long? {
+        return runCatching {
+            WeDatabaseApi.rawQuery(
+                "SELECT msgId FROM message WHERE msgSvrId=? LIMIT 1",
+                arrayOf<Any>(msgSvrId)
+            ).use { c -> if (c.moveToFirst() && !c.isNull(0)) c.getLong(0) else null }
+        }.getOrNull()?.takeIf { it > 0L }
     }
 
     /** 轮询直到该 ImgInfo2 行的图片文件真正落地到磁盘 (以文件存在为准, 而非 iscomplete 标志)。 */
